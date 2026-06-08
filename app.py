@@ -26,6 +26,19 @@ VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
 
 
+def get_local_builder_zip_bytes():
+    """Ha a telepítő/indító csomag ugyanabban a mappában van, letöltésre kínálja."""
+    candidates = [
+        Path(__file__).resolve().parent / "LifeLens_AI_Private_Desktop_Builder.zip",
+        Path.cwd() / "LifeLens_AI_Private_Desktop_Builder.zip",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.read_bytes()
+    return None
+
+
+
 st.set_page_config(page_title=APP_TITLE, page_icon="🔒", layout="wide")
 
 st.markdown(
@@ -517,6 +530,11 @@ def create_html_album(df: pd.DataFrame, title: str, max_items: int = 80) -> byte
 
 
 # Sidebar
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Helyi futtatási segítség")
+st.sidebar.caption("Privát családi képekhez használd a 💻 Helyi privát futtatás fület.")
+
 st.sidebar.header("1. Forrás kiválasztása")
 
 source_mode = st.sidebar.radio(
@@ -577,7 +595,7 @@ if df.empty:
     st.stop()
 
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 Áttekintés",
     "🔎 Keresés",
     "🎞️ Videók",
@@ -585,6 +603,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🎯 Albumok",
     "📦 Rendezett ZIP",
     "🧭 Jövőbeli források",
+    "💻 Helyi privát futtatás",
 ])
 
 with tab1:
@@ -764,5 +783,77 @@ with tab7:
         - ez lenne a legprivátabb
         - nem kell feltölteni semmit
         - közvetlenül tud mappát/HDD-t/NAS-t olvasni
+        """
+    )
+
+
+with tab8:
+    st.subheader("💻 Helyi privát futtatás")
+    st.markdown(
+        """
+        Ez a rész azoknak szól, akik **nem szeretnék feltölteni** a családi képeiket/videóikat online felületre.
+
+        **A legbiztonságosabb működés:**
+        - az app a saját gépeden fut,
+        - helyi mappát vagy külső meghajtót olvas,
+        - a képek nem mennek fel szerverre,
+        - az eredeti képeket nem törli és nem mozgatja.
+        """
+    )
+
+    st.info(
+        "Online Streamlit Cloudon a helyi C:\\ vagy D:\\ útvonal nem működik, mert a felhős szerver nem látja a saját géped meghajtóit. "
+        "Helyi futtatásnál viszont működik."
+    )
+
+    st.markdown("### 1. Python telepítése, ha még nincs")
+    st.markdown(
+        """
+        Töltsd le a hivatalos Python telepítőt a Python oldaláról.  
+        Telepítéskor fontos: **Add Python to PATH** legyen bepipálva.
+        """
+    )
+    st.link_button("Python letöltése – hivatalos oldal", "https://www.python.org/downloads/")
+
+    st.markdown("### 2. Dupla kattintós indító / telepítő csomag")
+    st.markdown(
+        """
+        A csomagban van:
+        - `RUN_SOURCE_LOCAL.bat` – gyors helyi futtatás,
+        - `BUILD_EXE_WINDOWS.bat` – Windows EXE készítés,
+        - `BUILD_INSTALLER_WINDOWS.bat` – telepítő készítés Inno Setup-pal,
+        - adatvédelmi szöveg és útmutató.
+        """
+    )
+
+    builder_bytes = get_local_builder_zip_bytes()
+    if builder_bytes:
+        st.download_button(
+            "LifeLens helyi indító / desktop builder csomag letöltése",
+            data=builder_bytes,
+            file_name="LifeLens_AI_Private_Desktop_Builder.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+    else:
+        st.warning(
+            "A desktop builder ZIP nincs az app mappájában. "
+            "Tedd a LifeLens_AI_Private_Desktop_Builder.zip fájlt ugyanabba a mappába, ahol az app fut."
+        )
+
+    st.markdown("### 3. Használat egyszerűen")
+    st.code(
+        """1. ZIP kicsomagolása például: C:\\LifeLens
+2. Dupla katt: RUN_SOURCE_LOCAL.bat
+3. Megnyílik: http://localhost:8501
+4. Helyi mappa útvonala működni fog, pl. C:\\Users\\T470\\Desktop\\Foto_App""",
+        language="text",
+    )
+
+    st.markdown("### Miért nem lehet egy online appból Python-telepítést indítani?")
+    st.markdown(
+        """
+        A böngésző biztonsági okból nem engedi, hogy egy webapp programokat telepítsen a gépedre vagy közvetlenül olvassa a mappáidat.  
+        Ez jó dolog: ettől biztonságosabb a géped. Ezért kell a helyi indítócsomag vagy később egy rendes Windows telepítő.
         """
     )
