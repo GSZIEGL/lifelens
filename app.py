@@ -562,9 +562,9 @@ with st.sidebar:
             st.success("✅ Mappa elérhető")
         else:
             st.warning("⚠️ Ezt az útvonalat a Python jelenleg nem találja.")
-            st.caption("Tipp: lehet OneDrive Desktop. Próbáld: C:\Users\T470\OneDrive\Desktop\Emese")
+            st.caption(r"Tipp: lehet OneDrive Desktop. Próbáld: C:\Users\T470\OneDrive\Desktop\Emese")
 
-    st.caption("Példa: C:\Users\T470\Desktop\Emese vagy C:\Users\T470\OneDrive\Desktop\Emese")
+    st.caption(r"Példa: C:\Users\T470\Desktop\Emese vagy C:\Users\T470\OneDrive\Desktop\Emese")
 
 
     st.header("2. Gyors index")
