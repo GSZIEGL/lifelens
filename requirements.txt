@@ -1,5 +1,9 @@
-streamlit
-pandas
-numpy
-pillow
-opencv-python
+streamlit>=1.40.0
+pandas>=2.2.0
+numpy>=1.26.0
+pillow>=10.0.0
+opencv-python>=4.10.0
+plotly>=5.24.0
+networkx>=3.3
+torch
+transformers
