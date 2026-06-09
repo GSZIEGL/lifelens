@@ -1,25 +1,34 @@
-
 import io
-import unicodedata
 import os
 import re
+import json
 import zipfile
 import hashlib
-import shutil
 import tempfile
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image, ImageStat, ExifTags, ImageOps
+from PIL import Image, ImageOps, ImageStat, ExifTags
 
 try:
     import cv2
 except Exception:
     cv2 = None
 
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+except Exception:
+    px = None
+    go = None
+
+try:
+    import networkx as nx
+except Exception:
+    nx = None
 
 try:
     import torch
@@ -30,187 +39,90 @@ except Exception:
     CLIPProcessor = None
 
 
-
-APP_TITLE = "LifeLens AI Private V6 – Privát fotó és videó rendező"
+APP_TITLE = "LifeLens V7.1 – Family Analytics + Deep Analysis"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
 
+PERSON_HINTS = {
+    "Lenke": ["lenke", "lencsi"],
+    "Zente": ["zente"],
+    "Apa": ["apa", "apu", "gabor", "gábor"],
+    "Anya": ["anya", "anyu"],
+    "Nagyi": ["nagyi", "mama", "nagymama"],
+}
+
+TOPIC_PROMPTS = {
+    "sakk": ["a child playing chess", "chess board", "people playing chess"],
+    "traktor": ["tractor", "child with tractor", "farm vehicle", "toy tractor"],
+    "vonat": ["train", "toy train", "railway"],
+    "bicikli": ["child riding a bicycle", "bicycle", "balance bike"],
+    "foci": ["football soccer", "soccer ball", "child playing football"],
+    "fagyi": ["ice cream", "child eating ice cream"],
+    "rajzolás": ["child drawing", "colored pencils", "drawing on paper"],
+    "karácsony": ["christmas tree", "christmas family", "christmas gifts"],
+    "születésnap": ["birthday cake", "birthday party", "child birthday"],
+    "nyaralás": ["family vacation", "beach holiday", "travel family"],
+    "játszótér": ["playground", "child on playground", "swing slide"],
+    "kirándulás": ["family hiking", "mountain landscape", "outdoor trip"],
+    "kutya": ["dog", "child with dog"],
+    "autó": ["car", "child near car"],
+    "iskola": ["school classroom", "child in school", "first day of school"],
+    "óvoda": ["kindergarten", "preschool child", "children in kindergarten"],
+    "strand": ["beach", "child on beach", "family at beach"],
+    "hegy": ["mountain landscape", "child in front of mountain", "family hiking in mountains"],
+    "torta": ["cake", "birthday cake", "child with cake"],
+    "plüss": ["stuffed animal", "child with stuffed toy", "plush toy"],
+    "jármű": ["vehicle", "toy vehicle", "child with vehicle"],
+}
+
+EVENT_KEYWORDS = {
+    "karácsony": ["karacsony", "karácsony", "christmas", "xmas", "december"],
+    "születésnap": ["szulinap", "szülinap", "birthday", "torta", "party", "buli"],
+    "nyaralás": ["balaton", "nyaralas", "nyaralás", "holiday", "vacation", "strand", "hotel", "wellness"],
+    "iskola/óvoda": ["ovi", "ovoda", "óvoda", "iskola", "bolcsi", "bölcsi", "ballagas", "farsang"],
+    "sport": ["foci", "football", "edzes", "edzés", "meccs", "torna", "uszas", "úszás"],
+}
+
+ACTIVE_TOPICS = {"bicikli", "foci", "nyaralás", "játszótér", "kirándulás", "traktor", "strand", "hegy"}
+MOOD_POSITIVE_TOPICS = {"karácsony", "születésnap", "nyaralás", "játszótér", "fagyi", "torta", "strand"}
+
+st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
+
+st.markdown("""
+<style>
+.insight-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 18px;
+    padding: 16px;
+    margin-bottom: 12px;
+    background: #f8fafc;
+}
+.deep-box {
+    border: 1px solid #7c3aed;
+    background: #f5f3ff;
+    color: #2e1065;
+    padding: 16px;
+    border-radius: 18px;
+    margin-bottom: 12px;
+}
+.small-muted { color:#64748b; font-size:0.9rem; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📊 LifeLens V7.1 – Family Analytics")
+st.caption("Helyi családi képelemző dashboard · gyors index + opcionális Deep Analysis")
+
+st.markdown("""
+<div class="deep-box">
+<b>V7.1 újdonság:</b> az app először gyors indexet készít. 
+Utána külön elindítható a <b>Deep Analysis</b>, amely helyi CLIP AI-val mélyebben elemzi a képtartalmat.
+</div>
+""", unsafe_allow_html=True)
 
 
-def get_download_file_bytes(filename: str):
-    """Letölthető csomag beolvasása az app mappájából vagy az aktuális munkamappából."""
-    candidates = [
-        Path(__file__).resolve().parent / filename,
-        Path.cwd() / filename,
-    ]
-    for p in candidates:
-        if p.exists():
-            return p.read_bytes()
-    return None
-
-
-def render_desktop_download_button(location: str = "main"):
-    """Desktop / helyi privát csomag letöltő gomb."""
-    desktop_bytes = (
-        get_download_file_bytes("LifeLens_Private_V5_6_Desktop_Package.zip") or get_download_file_bytes("LifeLens_Private_V5_Desktop_Package.zip")
-        or get_download_file_bytes("LifeLens_AI_Private_Desktop_Builder.zip")
-        or get_download_file_bytes("LifeLens_Private_V4_Desktop_Package.zip")
-    )
-    if desktop_bytes:
-        st.download_button(
-            "⬇ LifeLens Desktop / helyi privát verzió letöltése",
-            data=desktop_bytes,
-            file_name="LifeLens_Private_Desktop_Package.zip",
-            mime="application/zip",
-            use_container_width=True,
-            key=f"download_desktop_{location}",
-        )
-    else:
-        st.warning(
-            "A desktop letöltőcsomag nincs az app mappájában. "
-            "Tedd a LifeLens_Private_V5_Desktop_Package.zip fájlt ugyanabba a mappába, ahol az app fut."
-        )
-
-
-def get_local_builder_zip_bytes():
-    """Ha a telepítő/indító csomag ugyanabban a mappában van, letöltésre kínálja."""
-    candidates = [
-        Path(__file__).resolve().parent / "LifeLens_Private_V5_6_Desktop_Package.zip",
-        Path.cwd() / "LifeLens_Private_V5_Desktop_Package.zip",
-        Path(__file__).resolve().parent / "LifeLens_AI_Private_Desktop_Builder.zip",
-        Path.cwd() / "LifeLens_AI_Private_Desktop_Builder.zip",
-        Path(__file__).resolve().parent / "LifeLens_Private_V4_Desktop_Package.zip",
-        Path.cwd() / "LifeLens_Private_V4_Desktop_Package.zip",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p.read_bytes()
-    return None
-
-
-
-
-def is_local_runtime() -> bool:
-    """True, ha az app localhoston/saját gépen fut."""
-    try:
-        host = st.context.headers.get("host", "")
-        return host.startswith("localhost") or host.startswith("127.0.0.1") or host.startswith("0.0.0.0")
-    except Exception:
-        return False
-
-
-def render_runtime_notice():
-    if is_local_runtime():
-        st.success(
-            "✅ Helyi privát mód aktív: localhoston futsz. "
-            "Ilyenkor a ZIP feltöltés és a helyi mappaútvonal is a saját gépeden marad."
-        )
-        st.caption("Ha a címsorban localhost:8501 vagy 127.0.0.1:8501 látszik, az a saját géped.")
-    else:
-        st.warning(
-            "🌐 Online/felhős mód: privát családi képekhez inkább a helyi indítót használd. "
-            "Online módban a ZIP feltöltés technikailag szerverre kerülhet, és a C:\\ / D:\\ mappáid nem láthatók."
-        )
-
-st.set_page_config(page_title=APP_TITLE, page_icon="🔒", layout="wide")
-
-st.markdown(
-    """
-    <style>
-    .privacy-box {
-        padding: 1rem;
-        border-radius: 16px;
-        background: #ecfdf5;
-        border: 1px solid #10b981;
-        color: #064e3b;
-        margin-bottom: 1rem;
-    }
-    .warn-box {
-        padding: 1rem;
-        border-radius: 16px;
-        background: #fff7ed;
-        border: 1px solid #f97316;
-        color: #7c2d12;
-        margin-bottom: 1rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.title("🔒 LifeLens AI Private V6")
-st.caption("Privát fotó- és videórendező · helyi futtatásra optimalizálva")
-render_runtime_notice()
-
-st.markdown(
-    """
-    <div class="privacy-box">
-    <b>Privát mód:</b> ezt az appot helyben futtasd a saját gépeden.
-    A képeket és videókat ez a kód nem küldi külső szerverre, nem használja tanításra, és nem osztja meg senkivel.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-    <div class="warn-box">
-    <b>Fontos:</b> ha ezt Streamlit Cloudra vagy más szerverre teszed, akkor a ZIP/fájl feltöltés technikailag arra a szerverre kerül.
-    Privát családi képeknél első körben csak lokális futtatást javaslok: <code>streamlit run lifelens_private_app.py</code>.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-
-st.markdown("## 🚀 Hogyan szeretnéd használni?")
-
-col_online, col_local = st.columns(2)
-
-with col_online:
-    st.markdown(
-        """
-        ### 🌐 Online próba
-        Kisebb, nem érzékeny tesztanyaggal kipróbálható.
-
-        - ZIP feltöltés
-        - gyors demó
-        - a helyi `C:\\` meghajtó nem látható
-
-        ⚠️ Privát családi képekhez nem ezt ajánljuk.
-        """
-    )
-
-with col_local:
-    st.markdown(
-        """
-        ### 💻 Helyi privát verzió
-        Ez az ajánlott mód családi képekhez.
-
-        - saját gépen fut
-        - látja a helyi mappákat, külső HDD-t, NAS-t
-        - a képek/videók nem kerülnek felhőbe
-        - nagy archívumhoz ideális
-        """
-    )
-    render_desktop_download_button("landing")
-
-st.link_button("🐍 Python letöltése, ha a helyi indító kéri", "https://www.python.org/downloads/")
-st.divider()
-
-
-def safe_name(text: str) -> str:
-    text = str(text or "").strip()
-    text = text.replace("ő", "o").replace("ű", "u").replace("Ő", "O").replace("Ű", "U")
-    text = re.sub(r"[^\w\- .áéíóöúüÁÉÍÓÖÚÜ]+", "_", text)
-    text = re.sub(r"\s+", "_", text)
-    return text[:120] if text else "ismeretlen"
-
-
-
-def normalize_text_for_match(text: str) -> str:
+def normalize_text(text: str) -> str:
+    import unicodedata
     text = str(text or "").lower()
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -218,115 +130,13 @@ def normalize_text_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-CATEGORY_RULES = {
-    "Karácsony / ünnepek": ["karacsony", "christmas", "xmas", "mikulas", "december", "unnep"],
-    "Születésnap / buli": ["szulinap", "birthday", "torta", "party", "zsúr", "zsur"],
-    "Nyaralás / utazás": ["balaton", "nyaralas", "nyaralás", "holiday", "vacation", "strand", "tenger", "utazas", "hotel", "wellness", "kirandulas", "ausztria", "horvatorszag", "olasz"],
-    "Óvoda / iskola / bölcsi": ["ovi", "ovoda", "iskola", "bolcsi", "bolcsode", "ballagas", "evzaro", "farsang"],
-    "Sport / foci": ["foci", "football", "sport", "edzes", "meccs", "torna", "uszas", "futas"],
-    "Járművek / traktor / autó": ["traktor", "auto", "autó", "kocsi", "jarmu", "vonat", "hajo", "busz", "kamion", "markolo", "daru", "repulo"],
-    "Állatok": ["kutya", "macska", "cica", "lo", "ló", "allat", "zoo", "allatkert"],
-    "Dokumentum / screenshot": ["screenshot", "kepernyokep", "képernyőkép", "scan", "szamla", "dokumentum", "pdf", "igazolvany"],
-}
+def safe_name(text: str) -> str:
+    text = str(text or "album").strip()
+    text = text.replace("ő", "o").replace("ű", "u").replace("Ő", "O").replace("Ű", "U")
+    text = re.sub(r"[^\w\- .áéíóöúüÁÉÍÓÖÚÜ]+", "_", text)
+    text = re.sub(r"\s+", "_", text)
+    return text[:120] or "album"
 
-
-def infer_category_from_values(filename: str, folder: str, tags: str, media_type: str, month) -> tuple[str, str]:
-    """Kategória becslése fájlnév + teljes mappaútvonal + tag + dátum alapján."""
-    haystack = normalize_text_for_match(f"{filename} {folder} {tags}")
-
-    # Erős jel: screenshot/dokumentum
-    if any(k in haystack for k in CATEGORY_RULES["Dokumentum / screenshot"]):
-        return "Dokumentum / screenshot", "screenshot/dokumentum kulcsszó"
-
-    for category, keywords in CATEGORY_RULES.items():
-        if category == "Dokumentum / screenshot":
-            continue
-        hits = [kw for kw in keywords if normalize_text_for_match(kw) in haystack]
-        if hits:
-            return category, "kulcsszó/mappa alapján: " + ", ".join(hits[:4])
-
-    try:
-        m = int(month) if pd.notna(month) else None
-    except Exception:
-        m = None
-
-    if m == 12:
-        return "Karácsony / ünnepek", "decemberi dátum alapján"
-    if m in [6, 7, 8]:
-        return "Nyár / lehetséges nyaralás", "nyári dátum alapján"
-
-    return ("Videók / egyéb" if media_type == "video" else "Képek / egyéb", "nincs erős kategóriajel")
-
-
-def add_categories(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-    vals = out.apply(
-        lambda r: infer_category_from_values(
-            r.get("filename", ""),
-            r.get("folder", ""),
-            r.get("tags", ""),
-            r.get("media_type", ""),
-            r.get("month", None),
-        ),
-        axis=1,
-    )
-    out["category"] = [v[0] for v in vals]
-    out["category_reason"] = [v[1] for v in vals]
-    return out
-
-
-def build_timeline_tables(df: pd.DataFrame):
-    if df is None or df.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    tmp = df.copy()
-    tmp["date_dt"] = pd.to_datetime(tmp["date"], errors="coerce")
-    tmp = tmp.dropna(subset=["date_dt"])
-    if tmp.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    tmp["day"] = tmp["date_dt"].dt.date
-    tmp["year_num"] = tmp["date_dt"].dt.year
-    tmp["month_num"] = tmp["date_dt"].dt.month
-    tmp["year_month"] = tmp["date_dt"].dt.strftime("%Y-%m")
-
-    year_summary = tmp.groupby("year_num").agg(
-        media_count=("path", "count"),
-        photos=("media_type", lambda s: int((s == "image").sum())),
-        videos=("media_type", lambda s: int((s == "video").sum())),
-        total_size_mb=("size_mb", "sum"),
-        avg_quality=("quality_score", "mean"),
-    ).reset_index().rename(columns={"year_num": "year"}).sort_values("year")
-
-    month_summary = tmp.groupby(["year_num", "month_num", "year_month"]).agg(
-        media_count=("path", "count"),
-        photos=("media_type", lambda s: int((s == "image").sum())),
-        videos=("media_type", lambda s: int((s == "video").sum())),
-        total_size_mb=("size_mb", "sum"),
-        avg_quality=("quality_score", "mean"),
-    ).reset_index().rename(columns={"year_num": "year", "month_num": "month"}).sort_values(["year", "month"])
-
-    day_summary = tmp.groupby("day").agg(
-        media_count=("path", "count"),
-        photos=("media_type", lambda s: int((s == "image").sum())),
-        videos=("media_type", lambda s: int((s == "video").sum())),
-        avg_quality=("quality_score", "mean"),
-    ).reset_index().sort_values("media_count", ascending=False)
-
-    return year_summary, month_summary, day_summary
-
-
-def render_preview_grid(rows_df: pd.DataFrame, max_items: int = 12):
-    if rows_df is None or rows_df.empty:
-        st.info("Nincs előnézet.")
-        return
-    cols = st.columns(4)
-    for i, (_, row) in enumerate(rows_df.head(max_items).iterrows()):
-        p = Path(str(row.get("preview_path") or row.get("path") or ""))
-        if p.exists():
-            with cols[i % 4]:
-                st.image(str(p), caption=f"{row.get('media_type','')} · {row.get('filename','')}", use_container_width=True)
 
 def md5_file(path: Path, chunk_size=1024 * 1024) -> str:
     h = hashlib.md5()
@@ -336,18 +146,7 @@ def md5_file(path: Path, chunk_size=1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def average_hash(img: Image.Image, hash_size: int = 8) -> str:
-    try:
-        g = ImageOps.grayscale(img).resize((hash_size, hash_size))
-        arr = np.asarray(g, dtype=np.float32)
-        avg = arr.mean()
-        bits = arr > avg
-        return "".join("1" if b else "0" for b in bits.flatten())
-    except Exception:
-        return ""
-
-
-def get_exif_datetime(img: Image.Image):
+def get_exif_datetime(img):
     try:
         exif = img.getexif()
         if not exif:
@@ -355,9 +154,8 @@ def get_exif_datetime(img: Image.Image):
         tag_map = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
         for key in ["DateTimeOriginal", "DateTimeDigitized", "DateTime"]:
             if key in tag_map:
-                raw = str(tag_map[key])
                 try:
-                    return datetime.strptime(raw, "%Y:%m:%d %H:%M:%S")
+                    return datetime.strptime(str(tag_map[key]), "%Y:%m:%d %H:%M:%S")
                 except Exception:
                     pass
     except Exception:
@@ -372,69 +170,18 @@ def fallback_datetime(path: Path):
         return None
 
 
-def classify_basic_tags(path: Path, dt: datetime | None, media_type: str, w=None, h=None) -> list[str]:
-    """Alap címkézés fájlnév + teljes mappaútvonal + dátum alapján."""
-    tags = []
-    full_text = normalize_text_for_match(f"{path.name} {path.parent}")
-
-    tags.append("videó" if media_type == "video" else "kép")
-
-    if "screenshot" in full_text or "kepernyokep" in full_text:
-        tags.append("screenshot")
-
-    if w and h:
-        ratio = max(w, h) / max(1, min(w, h))
-        if ratio > 1.9 and (w > 1200 or h > 1200):
-            tags.append("panoráma")
-        if w < 900 or h < 900:
-            tags.append("kis felbontás")
-
-    if dt:
-        if dt.month == 12:
-            tags.append("december")
-            tags.append("karácsony/időszak")
-        if dt.month in [6, 7, 8]:
-            tags.append("nyár")
-        if dt.month in [1, 2]:
-            tags.append("tél")
-
-    for category, keywords in CATEGORY_RULES.items():
-        for keyword in keywords:
-            if normalize_text_for_match(keyword) in full_text:
-                tags.append(keyword)
-
-    return sorted(set(tags))
-
-def sharpness_score(img: Image.Image) -> float:
+def quality_score(img: Image.Image) -> float:
     try:
-        g = np.asarray(ImageOps.grayscale(img).resize((256, 256)), dtype=np.float32)
-        dx = np.diff(g, axis=1)
-        dy = np.diff(g, axis=0)
-        return float(dx.var() + dy.var())
-    except Exception:
-        return 0.0
-
-
-def exposure_score(img: Image.Image) -> float:
-    try:
-        small = ImageOps.grayscale(img).resize((128, 128))
-        stat = ImageStat.Stat(small)
+        small = ImageOps.grayscale(img).resize((256, 256))
+        arr = np.asarray(small, dtype=np.float32)
+        sharp = np.diff(arr, axis=1).var() + np.diff(arr, axis=0).var()
+        stat = ImageStat.Stat(small.resize((128, 128)))
         mean = stat.mean[0]
         std = stat.stddev[0]
-        middle = 1 - abs(mean - 128) / 128
-        contrast = min(std / 64, 1)
-        return float(max(0, middle) * 60 + contrast * 40)
+        exposure = max(0, 1 - abs(mean - 128) / 128) * 60 + min(std / 64, 1) * 40
+        return round(float(sharp * 0.7 + exposure * 0.3), 2)
     except Exception:
         return 0.0
-
-
-def quality_score(img: Image.Image) -> float:
-    return round(sharpness_score(img) * 0.7 + exposure_score(img) * 0.3, 2)
-
-
-def extract_zip(uploaded_file, dest: Path):
-    with zipfile.ZipFile(uploaded_file) as z:
-        z.extractall(dest)
 
 
 def iter_media_files(root: Path):
@@ -443,928 +190,584 @@ def iter_media_files(root: Path):
             yield p
 
 
-def get_video_metadata(path: Path, preview_dir: Path):
-    if cv2 is None:
-        return {
-            "duration_sec": None,
-            "fps": None,
-            "frame_count": None,
-            "width": None,
-            "height": None,
-            "preview_path": "",
-            "video_quality_score": 0,
-            "phash": "",
-        }
+@st.cache_resource(show_spinner=False)
+def load_clip():
+    if CLIPModel is None or CLIPProcessor is None or torch is None:
+        return None, None, None
+    model_name = "openai/clip-vit-base-patch32"
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    model.eval()
+    return model, processor, device
 
+
+def clip_analyze_image(img: Image.Image, threshold: float = 0.20):
+    model, processor, device = load_clip()
+    if model is None:
+        return {}, [], ""
+    labels = []
+    prompts = []
+    for topic, ps in TOPIC_PROMPTS.items():
+        for p in ps:
+            labels.append(topic)
+            prompts.append(p)
+
+    inputs = processor(text=prompts, images=img, return_tensors="pt", padding=True).to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = outputs.logits_per_image.softmax(dim=1)[0].detach().cpu().numpy()
+
+    best_by_topic = {}
+    for label, prob in zip(labels, probs):
+        best_by_topic[label] = max(best_by_topic.get(label, 0), float(prob))
+
+    selected = [k for k, v in best_by_topic.items() if v >= threshold]
+    selected = sorted(selected, key=lambda k: best_by_topic[k], reverse=True)
+    reason = ", ".join([f"{k}:{best_by_topic[k]:.2f}" for k in selected[:7]])
+    return best_by_topic, selected[:10], reason
+
+
+def infer_filename_tags(path: Path, dt):
+    text = normalize_text(f"{path.name} {path.parent}")
+    topics = set()
+    events = set()
+    persons = set()
+
+    for person, hints in PERSON_HINTS.items():
+        if any(normalize_text(h) in text for h in hints):
+            persons.add(person)
+
+    for topic in TOPIC_PROMPTS.keys():
+        if normalize_text(topic) in text:
+            topics.add(topic)
+
+    for event, words in EVENT_KEYWORDS.items():
+        if any(normalize_text(w) in text for w in words):
+            events.add(event)
+            if event in TOPIC_PROMPTS:
+                topics.add(event)
+
+    if dt:
+        if dt.month == 12:
+            events.add("karácsony")
+            topics.add("karácsony")
+        if dt.month in [6, 7, 8]:
+            topics.add("nyaralás")
+
+    return sorted(persons), sorted(topics), sorted(events)
+
+
+def get_video_preview(path: Path, preview_dir: Path):
+    if cv2 is None:
+        return "", None, None, None
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
-        return {
-            "duration_sec": None,
-            "fps": None,
-            "frame_count": None,
-            "width": None,
-            "height": None,
-            "preview_path": "",
-            "video_quality_score": 0,
-            "phash": "",
-        }
-
+        return "", None, None, None
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    duration = frame_count / fps if fps else None
-
-    # középső képkocka preview
-    target_frame = int(frame_count * 0.35) if frame_count else 0
-    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+    duration = round(frames / fps, 1) if fps else None
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frames * 0.35) if frames else 0)
     ok, frame = cap.read()
     cap.release()
-
-    preview_path = ""
-    q = 0
-    phash = ""
-
-    if ok and frame is not None:
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(frame_rgb)
-        q = quality_score(img)
-        phash = average_hash(img)
-        preview_dir.mkdir(parents=True, exist_ok=True)
-        preview_path = preview_dir / (hashlib.md5(str(path).encode()).hexdigest() + ".jpg")
-        img.save(preview_path, quality=85)
-        preview_path = str(preview_path)
-
-    return {
-        "duration_sec": round(duration, 1) if duration else None,
-        "fps": round(fps, 1) if fps else None,
-        "frame_count": int(frame_count) if frame_count else None,
-        "width": width,
-        "height": height,
-        "preview_path": preview_path,
-        "video_quality_score": q,
-        "phash": phash,
-    }
+    if not ok:
+        return "", width, height, duration
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    out = preview_dir / (hashlib.md5(str(path).encode()).hexdigest() + ".jpg")
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    img.save(out, quality=85)
+    return str(out), width, height, duration
 
 
-def scan_media(root: Path, limit: int | None = None, use_visual_ai: bool = False, visual_threshold: float = 0.18) -> pd.DataFrame:
+def scan_media(root: Path, limit: int):
+    files = list(iter_media_files(root))[:limit]
     rows = []
-    files = list(iter_media_files(root))
-    if limit:
-        files = files[:limit]
-
-    preview_dir = Path(st.session_state.work_dir) / "video_previews"
-    progress = st.progress(0, text="Média indexelése...")
+    preview_dir = Path(st.session_state.work_dir) / "previews"
+    progress = st.progress(0, text="Gyors index készül...")
 
     for i, path in enumerate(files):
         media_type = "video" if path.suffix.lower() in VIDEO_EXT else "image"
         try:
             dt = fallback_datetime(path)
+            preview_path, width, height, duration = "", None, None, None
+            q = 0
 
             if media_type == "image":
                 with Image.open(path) as img:
-                    img = ImageOps.exif_transpose(img)
+                    img = ImageOps.exif_transpose(img).convert("RGB")
                     exif_dt = get_exif_datetime(img)
-                    if exif_dt is not None:
+                    if exif_dt:
                         dt = exif_dt
-
-                    w, h = img.size
-                    phash = average_hash(img)
+                    width, height = img.size
                     q = quality_score(img)
-                    tags = classify_basic_tags(path, dt, media_type, w, h)
-                    visual_tags, visual_category, visual_reason, visual_confidence = "", "", "", 0.0
-                    if use_visual_ai:
-                        visual_tags, visual_category, visual_reason, visual_confidence = analyze_image_content_clip(img, threshold=visual_threshold)
-
-                    rows.append({
-                        "media_type": "image",
-                        "path": str(path),
-                        "filename": path.name,
-                        "folder": str(path.parent),
-                        "size_mb": round(path.stat().st_size / (1024 * 1024), 2),
-                        "md5": md5_file(path),
-                        "phash": phash,
-                        "date": dt,
-                        "year": dt.year if dt else None,
-                        "month": dt.month if dt else None,
-                        "width": w,
-                        "height": h,
-                        "duration_sec": None,
-                        "fps": None,
-                        "preview_path": str(path),
-                        "quality_score": q,
-                        "tags": ", ".join(tags),
-                        "visual_tags": visual_tags,
-                        "visual_category": visual_category,
-                        "visual_confidence": visual_confidence,
-                        "visual_reason": visual_reason,
-                        "is_screenshot": "screenshot" in tags,
-                    })
+                    preview_path = str(path)
             else:
-                meta = get_video_metadata(path, preview_dir)
-                tags = classify_basic_tags(path, dt, media_type, meta.get("width"), meta.get("height"))
-                visual_tags, visual_category, visual_reason, visual_confidence = "", "", "", 0.0
-                if use_visual_ai and meta.get("preview_path"):
+                preview_path, width, height, duration = get_video_preview(path, preview_dir)
+                if preview_path:
                     try:
-                        with Image.open(meta.get("preview_path")) as preview_img:
-                            visual_tags, visual_category, visual_reason, visual_confidence = analyze_image_content_clip(preview_img, threshold=visual_threshold)
-                    except Exception as _exc:
-                        visual_reason = f"videó preview AI hiba: {_exc}"
+                        with Image.open(preview_path) as img:
+                            q = quality_score(img.convert("RGB"))
+                    except Exception:
+                        q = 0
 
-                rows.append({
-                    "media_type": "video",
-                    "path": str(path),
-                    "filename": path.name,
-                    "folder": str(path.parent),
-                    "size_mb": round(path.stat().st_size / (1024 * 1024), 2),
-                    "md5": md5_file(path),
-                    "phash": meta.get("phash", ""),
-                    "date": dt,
-                    "year": dt.year if dt else None,
-                    "month": dt.month if dt else None,
-                    "width": meta.get("width"),
-                    "height": meta.get("height"),
-                    "duration_sec": meta.get("duration_sec"),
-                    "fps": meta.get("fps"),
-                    "preview_path": meta.get("preview_path", ""),
-                    "quality_score": meta.get("video_quality_score", 0),
-                    "tags": ", ".join(tags),
-                    "visual_tags": visual_tags,
-                    "visual_category": visual_category,
-                    "visual_confidence": visual_confidence,
-                    "visual_reason": visual_reason,
-                    "is_screenshot": False,
-                })
+            persons, topics, events = infer_filename_tags(path, dt)
+            active_score = sum(1 for t in topics if t in ACTIVE_TOPICS)
+            mood_score = sum(1 for t in topics if t in MOOD_POSITIVE_TOPICS)
 
-        except Exception as exc:
             rows.append({
                 "media_type": media_type,
                 "path": str(path),
                 "filename": path.name,
                 "folder": str(path.parent),
-                "error": str(exc),
+                "preview_path": preview_path,
+                "size_mb": round(path.stat().st_size / (1024*1024), 2),
+                "md5": md5_file(path),
+                "date": dt,
+                "year": dt.year if dt else None,
+                "month": dt.month if dt else None,
+                "year_month": dt.strftime("%Y-%m") if dt else "Dátum nélkül",
+                "width": width,
+                "height": height,
+                "duration_sec": duration,
+                "quality_score": q,
+                "persons": ", ".join(persons),
+                "topics": ", ".join(topics),
+                "events": ", ".join(sorted(set(events))),
+                "ai_topics": "",
+                "ai_reason": "",
+                "deep_analyzed": False,
+                "active_flag": active_score > 0,
+                "positive_visual_flag": mood_score > 0,
+                "person_count": len(persons),
             })
-
-        progress.progress((i + 1) / max(len(files), 1), text=f"Indexelés: {i+1}/{len(files)}")
+        except Exception as exc:
+            rows.append({"media_type": media_type, "path": str(path), "filename": path.name, "error": str(exc)})
+        progress.progress((i + 1) / max(1, len(files)), text=f"Gyors index: {i+1}/{len(files)}")
     progress.empty()
-
     df = pd.DataFrame(rows)
-    if not df.empty:
-        df = add_categories(df)
     if not df.empty and "date" in df.columns:
-        df = df.sort_values("date", ascending=True, na_position="last")
+        df = df.sort_values("date", na_position="last")
     return df
 
 
-def duplicate_summary(df: pd.DataFrame):
-    if df.empty or "md5" not in df.columns:
-        return pd.DataFrame()
-    dup = df[df.duplicated("md5", keep=False)].copy()
-    if dup.empty:
-        return pd.DataFrame()
-    dup["duplicate_group"] = dup.groupby("md5").ngroup() + 1
-    return dup.sort_values(["duplicate_group", "filename"])
-
-
-def build_album(df: pd.DataFrame, mode: str, top_n: int = 100) -> pd.DataFrame:
-    """Normálisabb albumválogatás: minőség + kategória + dátum szerinti szórás.
-
-    Nem csak a legélesebb 100 képet veszi, hanem igyekszik napok/élmények szerint változatosan válogatni.
-    """
+def run_deep_analysis(df: pd.DataFrame, threshold: float, max_items: int):
     if df.empty:
+        return df
+    if CLIPModel is None or torch is None:
+        st.error("A Deep Analysis-hez telepíteni kell: torch + transformers. Futtasd az INSTALL_AI_IMAGE_RECOGNITION.bat fájlt.")
         return df
 
     work = df.copy()
-    if "quality_score" not in work.columns:
-        work["quality_score"] = 0
-    if "category" not in work.columns:
-        work = add_categories(work)
+    candidates = work[~work.get("deep_analyzed", False).fillna(False)].head(max_items).copy()
+    progress = st.progress(0, text="Deep Analysis indul...")
 
-    # alap szűrések
-    if mode == "Top képek és videók":
-        pool = work
-    elif mode == "Top fotók":
-        pool = work[work["media_type"].eq("image")]
-    elif mode == "Top videók":
-        pool = work[work["media_type"].eq("video")]
-    elif mode == "Családi / esemény válogatás":
-        pool = work[
-            ~work.get("is_screenshot", pd.Series(False, index=work.index)).fillna(False)
-        ]
-    elif mode == "Karácsony":
-        pool = work[work["category"].fillna("").str.contains("Karácsony|ünnep", case=False, regex=True)]
-    elif mode == "Nyár / nyaralás":
-        pool = work[work["category"].fillna("").str.contains("Nyaralás|strand|víz|Nyár", case=False, regex=True)]
-    elif mode == "Gyerek / család":
-        pool = work[work["category"].fillna("").str.contains("Család|emberek", case=False, regex=True)]
-    elif mode == "Sport / foci":
-        pool = work[work["category"].fillna("").str.contains("Sport|foci", case=False, regex=True)]
-    elif mode == "Járművek":
-        pool = work[work["category"].fillna("").str.contains("Jármű", case=False, regex=True)]
-    else:
-        pool = work
-
-    if pool.empty:
-        return pool
-
-    pool = pool.copy()
-    pool["date_dt"] = pd.to_datetime(pool["date"], errors="coerce")
-    pool["day"] = pool["date_dt"].dt.date
-
-    # Screenshot és dokumentumok ne kerüljenek normál albumba, kivéve ha direkt Top minden.
-    if mode not in ["Top képek és videók"]:
-        pool = pool[~pool.get("is_screenshot", pd.Series(False, index=pool.index)).fillna(False)]
-        if "category" in pool.columns:
-            pool = pool[~pool["category"].fillna("").str.contains("Dokumentum|screenshot", case=False, regex=True)]
-
-    # naponta max 8 elem, hogy változatos legyen
-    selected = []
-    for _, day_df in pool.sort_values("quality_score", ascending=False).groupby("day", dropna=False):
-        selected.append(day_df.head(8))
-    if selected:
-        diverse = pd.concat(selected).sort_values("quality_score", ascending=False)
-    else:
-        diverse = pool.sort_values("quality_score", ascending=False)
-
-    return diverse.head(top_n).drop(columns=["date_dt", "day"], errors="ignore")
-
-def folder_for_row(row, structure: str):
-    year = int(row.get("year", 0) or 0)
-    month = int(row.get("month", 0) or 0)
-    tags = str(row.get("tags", "")).lower()
-    media_type = row.get("media_type", "image")
-
-    media_folder = "Videók" if media_type == "video" else "Képek"
-
-    if structure == "Év / hónap":
-        if year and month:
-            return Path(str(year)) / f"{month:02d}" / media_folder
-        return Path("Dátum_nélkül") / media_folder
-
-    if structure == "Téma szerint":
-        category = row.get("category", "")
-        if category:
-            return Path(safe_name(category)) / media_folder
-        if "karácsony" in tags or "karacsony" in tags or "december" in tags:
-            return Path("Ünnepek") / "Karácsony" / media_folder
-        if "nyár" in tags or "nyar" in tags or "balaton" in tags:
-            return Path("Nyaralás") / media_folder
-        if "screenshot" in tags:
-            return Path("Screenshotok")
-        if "traktor" in tags or "auto" in tags or "autó" in tags:
-            return Path("Járművek") / media_folder
-        if "foci" in tags or "football" in tags:
-            return Path("Sport") / media_folder
-        return Path("Egyéb") / media_folder
-
-    if structure == "Év / téma":
-        base = Path(str(year)) if year else Path("Dátum_nélkül")
-        return base / folder_for_row(row, "Téma szerint")
-
-    return Path("Rendezett") / media_folder
+    for idx_i, (idx, row) in enumerate(candidates.iterrows()):
+        p = Path(str(row.get("preview_path") or row.get("path") or ""))
+        try:
+            if p.exists():
+                with Image.open(p) as img:
+                    img = ImageOps.exif_transpose(img).convert("RGB")
+                    _, ai_topics, ai_reason = clip_analyze_image(img, threshold)
+                    old_topics = [x.strip() for x in str(work.at[idx, "topics"]).split(",") if x.strip()]
+                    merged = sorted(set(old_topics) | set(ai_topics))
+                    work.at[idx, "topics"] = ", ".join(merged)
+                    work.at[idx, "ai_topics"] = ", ".join(ai_topics)
+                    work.at[idx, "ai_reason"] = ai_reason
+                    work.at[idx, "deep_analyzed"] = True
+                    work.at[idx, "active_flag"] = any(t in ACTIVE_TOPICS for t in merged)
+                    work.at[idx, "positive_visual_flag"] = any(t in MOOD_POSITIVE_TOPICS for t in merged)
+        except Exception as exc:
+            work.at[idx, "ai_reason"] = f"Deep error: {exc}"
+            work.at[idx, "deep_analyzed"] = True
+        progress.progress((idx_i + 1) / max(1, len(candidates)), text=f"Deep Analysis: {idx_i+1}/{len(candidates)}")
+    progress.empty()
+    return work
 
 
-def create_organized_zip(df: pd.DataFrame, structure: str, include_mode: str, top_n: int = 500) -> bytes:
+def split_values(series):
+    vals = []
+    for item in series.fillna(""):
+        vals += [x.strip() for x in str(item).split(",") if x.strip()]
+    return vals
+
+
+def explode_values(df, col):
+    out = []
+    for _, r in df.iterrows():
+        for v in [x.strip() for x in str(r.get(col, "")).split(",") if x.strip()]:
+            row = r.to_dict()
+            row["value"] = v
+            out.append(row)
+    return pd.DataFrame(out)
+
+
+def compute_topic_year_scores(df):
+    if df.empty or "topics" not in df.columns:
+        return pd.DataFrame()
+    total_by_year = df.groupby("year").size().rename("year_total")
+    ex = explode_values(df, "topics")
+    if ex.empty:
+        return pd.DataFrame()
+    g = ex.groupby(["year", "value"]).agg(
+        count=("path", "count"),
+        videos=("media_type", lambda s: int((s == "video").sum())),
+        avg_quality=("quality_score", "mean"),
+        months=("month", "nunique"),
+        persons=("persons", lambda s: len(set(split_values(s))))
+    ).reset_index()
+    g = g.merge(total_by_year, on="year", how="left")
+    g["share_pct"] = (g["count"] / g["year_total"] * 100).round(1)
+    max_count = max(g["count"].max(), 1)
+    g["period_score"] = (
+        0.40 * (g["share_pct"] / max(g["share_pct"].max(), 1) * 100) +
+        0.30 * (g["count"] / max_count * 100) +
+        0.20 * (g["months"] / 12 * 100) +
+        0.10 * (g["persons"] / max(g["persons"].max(), 1) * 100)
+    ).round(1)
+    g = g.rename(columns={"value": "topic"})
+    return g.sort_values("period_score", ascending=False)
+
+
+def compute_relationships(df):
+    rows = []
+    for _, r in df.iterrows():
+        people = [x.strip() for x in str(r.get("persons", "")).split(",") if x.strip()]
+        for i in range(len(people)):
+            for j in range(i+1, len(people)):
+                rows.append({
+                    "person_a": people[i],
+                    "person_b": people[j],
+                    "year": r.get("year"),
+                    "path": r.get("path"),
+                })
+    rel = pd.DataFrame(rows)
+    if rel.empty:
+        return rel
+    return rel.groupby(["person_a", "person_b"]).size().reset_index(name="count").sort_values("count", ascending=False)
+
+
+def compute_family_scores(df):
     if df.empty:
-        return b""
+        return pd.DataFrame()
+    out = df.groupby("year").agg(
+        total=("path", "count"),
+        active=("active_flag", "sum"),
+        positive=("positive_visual_flag", "sum"),
+        together=("person_count", lambda s: int((s >= 2).sum())),
+        four_plus=("person_count", lambda s: int((s >= 4).sum())),
+    ).reset_index()
+    out["activity_index"] = (out["active"] / out["total"] * 100).round(1)
+    out["visual_positive_index"] = (out["positive"] / out["total"] * 100).round(1)
+    out["togetherness_score"] = ((out["together"] / out["total"] * 70) + (out["four_plus"] / out["total"] * 30)).round(1)
+    return out
 
-    work = df.copy()
-    if include_mode == "Csak top média":
-        work = work.sort_values("quality_score", ascending=False).head(top_n)
-    elif include_mode == "Duplikátumok nélkül":
-        work = work.drop_duplicates("md5", keep="first")
-    elif include_mode == "Screenshotok nélkül":
-        work = work[~work.get("is_screenshot", False).fillna(False)]
-    elif include_mode == "Csak képek":
-        work = work[work["media_type"].eq("image")]
-    elif include_mode == "Csak videók":
-        work = work[work["media_type"].eq("video")]
 
+def hidden_memories(df, min_age_years=3, top_n=50):
+    if df.empty or "date" not in df.columns:
+        return pd.DataFrame()
+    now = pd.Timestamp.now()
+    tmp = df.copy()
+    tmp["date_dt"] = pd.to_datetime(tmp["date"], errors="coerce")
+    tmp["age_years"] = ((now - tmp["date_dt"]).dt.days / 365.25).fillna(0)
+    tmp["topic_count"] = tmp["topics"].fillna("").apply(lambda x: len([v for v in str(x).split(",") if v.strip()]))
+    tmp["person_bonus"] = tmp["person_count"].fillna(0) * 8
+    tmp["hidden_score"] = (
+        tmp["age_years"].clip(0, 10) * 6 +
+        tmp["quality_score"].fillna(0).rank(pct=True) * 35 +
+        tmp["topic_count"] * 6 +
+        tmp["person_bonus"]
+    ).round(1)
+    return tmp[tmp["age_years"] >= min_age_years].sort_values("hidden_score", ascending=False).head(top_n)
+
+
+def create_album_zip(rows_df, name):
     mem = io.BytesIO()
-    used_names = set()
-
-    with zipfile.ZipFile(mem, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for _, row in work.iterrows():
-            src = Path(row["path"])
-            if not src.exists():
+    used = set()
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as z:
+        for _, r in rows_df.iterrows():
+            p = Path(str(r.get("path", "")))
+            if not p.exists():
                 continue
-            folder = folder_for_row(row, structure)
-            filename = safe_name(row.get("filename", src.name))
-            arc = str(folder / filename)
-
-            if arc in used_names:
-                stem = Path(filename).stem
-                suffix = Path(filename).suffix
-                arc = str(folder / f"{stem}_{hashlib.md5(str(src).encode()).hexdigest()[:6]}{suffix}")
-            used_names.add(arc)
-            z.write(src, arc)
-
-        index_csv = work.drop(columns=["md5", "phash"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
-        z.writestr("LifeLens_index.csv", index_csv)
-
+            arc = safe_name(r.get("filename", p.name))
+            if arc in used:
+                arc = f"{Path(arc).stem}_{hashlib.md5(str(p).encode()).hexdigest()[:6]}{p.suffix}"
+            used.add(arc)
+            z.write(p, arc)
+        z.writestr("lifelens_album_index.csv", rows_df.to_csv(index=False).encode("utf-8-sig"))
     mem.seek(0)
     return mem.read()
 
 
-def create_html_album(df: pd.DataFrame, title: str, max_items: int = 80) -> bytes:
-    work = df.sort_values("quality_score", ascending=False).head(max_items).copy()
-    rows = []
-    for _, row in work.iterrows():
-        src = Path(row["path"])
-        preview = row.get("preview_path", "")
-        preview_html = f'<img src="{preview}" style="width:100%;border-radius:12px;max-height:180px;object-fit:cover;">' if preview and Path(str(preview)).exists() else f"<div class='thumb'>{row.get('filename','')}</div>"
-        rows.append(f"""
-        <div class="card">
-            {preview_html}
-            <p><b>{row.get('media_type','')}</b> · {row.get('filename','')}</p>
-            <p><b>Dátum:</b> {row.get('date','')}</p>
-            <p><b>Pontszám:</b> {row.get('quality_score','')}</p>
-            <p><b>Címkék:</b> {row.get('tags','')}</p>
-            <p><small>{src}</small></p>
-        </div>
-        """)
-
-    html = f"""
-    <!doctype html>
-    <html lang="hu">
-    <head>
-      <meta charset="utf-8">
-      <title>{title}</title>
-      <style>
-        body {{ font-family: Arial, sans-serif; background:#f8fafc; color:#0f172a; margin:40px; }}
-        .grid {{ display:grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap:16px; }}
-        .card {{ background:white; border:1px solid #e2e8f0; border-radius:16px; padding:16px; }}
-        .thumb {{ height:120px; border-radius:12px; background:#e2e8f0; display:flex; align-items:center; justify-content:center; text-align:center; padding:8px; }}
-      </style>
-    </head>
-    <body>
-      <h1>{title}</h1>
-      <p>LifeLens AI Private – helyben generált album index</p>
-      <div class="grid">
-        {''.join(rows)}
-      </div>
-    </body>
-    </html>
-    """
-    return html.encode("utf-8")
-
-
-
-def create_story_album_html(df: pd.DataFrame, title: str, max_items: int = 160) -> bytes:
-    """Szebb HTML fotókönyv-idővonal export."""
-    if df is None or df.empty:
-        return b""
-
-    work = df.copy()
-    work["date_dt"] = pd.to_datetime(work["date"], errors="coerce")
-    work = work.sort_values(["date_dt", "quality_score"], ascending=[True, False]).head(max_items)
-
-    sections = []
-    for ym, part in work.groupby(work["date_dt"].dt.strftime("%Y-%m"), dropna=False):
-        cards = []
-        for _, row in part.sort_values("quality_score", ascending=False).head(24).iterrows():
-            preview = str(row.get("preview_path") or row.get("path") or "")
-            if preview and Path(preview).exists():
-                media_html = f'<img src="{preview}" class="photo">'
+def render_gallery(rows_df, max_items=24):
+    if rows_df is None or rows_df.empty:
+        st.info("Nincs megjeleníthető kép/videó.")
+        return
+    cols = st.columns(4)
+    for i, (_, row) in enumerate(rows_df.head(max_items).iterrows()):
+        p = Path(str(row.get("preview_path") or row.get("path") or ""))
+        with cols[i % 4]:
+            if p.exists():
+                st.image(str(p), caption=f"{row.get('filename','')} · {row.get('topics','')}", use_container_width=True)
             else:
-                media_html = f'<div class="placeholder">{row.get("filename","")}</div>'
-            cards.append(f"""
-            <div class="card">
-                {media_html}
-                <div class="meta">
-                    <b>{row.get("filename","")}</b><br>
-                    {row.get("date","")}<br>
-                    {row.get("category","")}<br>
-                    <small>{row.get("visual_tags","")}</small>
-                </div>
-            </div>
-            """)
-        sections.append(f"""
-        <section>
-            <h2>{ym if ym == ym else "Dátum nélkül"}</h2>
-            <div class="grid">{''.join(cards)}</div>
-        </section>
-        """)
+                st.write(row.get("filename", ""))
 
-    html = f"""
-    <!doctype html>
-    <html lang="hu">
-    <head>
-      <meta charset="utf-8">
-      <title>{title}</title>
-      <style>
-        body {{ font-family: Arial, sans-serif; background:#f8fafc; color:#0f172a; margin:0; }}
-        header {{ background:#0f172a; color:white; padding:40px; }}
-        header h1 {{ margin:0; font-size:36px; }}
-        section {{ padding:32px 40px; }}
-        h2 {{ border-bottom:2px solid #e2e8f0; padding-bottom:8px; }}
-        .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:18px; }}
-        .card {{ background:white; border:1px solid #e2e8f0; border-radius:18px; overflow:hidden; box-shadow:0 4px 14px rgba(15,23,42,.06); }}
-        .photo {{ width:100%; height:180px; object-fit:cover; display:block; }}
-        .placeholder {{ height:180px; background:#e2e8f0; display:flex; align-items:center; justify-content:center; padding:10px; text-align:center; }}
-        .meta {{ padding:12px; font-size:13px; line-height:1.45; }}
-      </style>
-    </head>
-    <body>
-      <header>
-        <h1>{title}</h1>
-        <p>LifeLens AI Private – helyben generált családi album</p>
-      </header>
-      {''.join(sections)}
-    </body>
-    </html>
-    """
-    return html.encode("utf-8")
-
-
-# Sidebar
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Helyi futtatási segítség")
-st.sidebar.caption("Privát családi képekhez használd a 💻 Helyi privát futtatás fület.")
-
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Desktop verzió")
-if st.sidebar.button("Miért jobb helyben futtatni?", use_container_width=True):
-    st.sidebar.info("Privát képeknél a helyi verzió ajánlott: a képek nem kerülnek felhőbe, és működik a C:\\ / D:\\ mappaútvonal.")
-
-
-st.sidebar.markdown("---")
-if is_local_runtime():
-    st.sidebar.success("Helyi mód aktív · localhost")
-    st.sidebar.caption("ZIP és helyi mappa is saját gépen marad.")
-else:
-    st.sidebar.warning("Online mód")
-    st.sidebar.caption("Privát képekhez használd a helyi indítót.")
-
-st.sidebar.header("1. Forrás kiválasztása")
-
-source_mode = st.sidebar.radio(
-    "Honnan jöjjenek a képek/videók?",
-    ["ZIP feltöltés", "Helyi mappa útvonala"],
-    help="Privát képekhez helyi futtatást javaslok. Streamlit Cloud esetén a ZIP a szerverre kerülne.",
-)
-
-work_root = None
 
 if "work_dir" not in st.session_state:
-    st.session_state.work_dir = tempfile.mkdtemp(prefix="lifelens_")
+    st.session_state.work_dir = tempfile.mkdtemp(prefix="lifelens_v7_1_")
 
-base_tmp = Path(st.session_state.work_dir)
+with st.sidebar:
+    st.header("1. Forrás")
+    folder = st.text_input("Helyi képmappa útvonala", value="")
+    st.caption("Példa: C:\\Users\\Gabor\\Pictures vagy külső HDD mappája")
 
-if source_mode == "ZIP feltöltés":
-    uploaded = st.sidebar.file_uploader("Képek és videók ZIP fájlban", type=["zip"])
-    if uploaded:
-        extract_dir = base_tmp / "uploaded_zip"
-        if st.sidebar.button("ZIP kibontása és beolvasása", use_container_width=True):
-            if extract_dir.exists():
-                shutil.rmtree(extract_dir)
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            extract_zip(uploaded, extract_dir)
-            st.session_state["photo_root"] = str(extract_dir)
-            st.success("ZIP kibontva.")
-else:
-    folder_text = st.sidebar.text_input("Helyi mappa útvonala", value="")
-    st.sidebar.caption("Példa Windows: C:\\Users\\Gabor\\Pictures")
-    if st.sidebar.button("Mappa beállítása", use_container_width=True):
-        p = Path(folder_text)
-        if p.exists() and p.is_dir():
-            st.session_state["photo_root"] = str(p)
-            st.success("Mappa beállítva.")
+    st.header("2. Gyors index")
+    limit = st.number_input("Max. fájl első teszthez", min_value=100, max_value=200000, value=3000, step=100)
+    if st.button("Gyors index indítása", use_container_width=True):
+        p = Path(folder)
+        if not p.exists() or not p.is_dir():
+            st.error("Nem találom ezt a mappát.")
         else:
-            st.error("Ez a mappa nem található.")
+            df = scan_media(p, int(limit))
+            st.session_state["df"] = df
+            save_path = p / "lifelens_v7_1_index.csv"
+            try:
+                df.to_csv(save_path, index=False, encoding="utf-8-sig")
+                st.success(f"Index mentve: {save_path}")
+            except Exception as exc:
+                st.warning(f"Index készült, de nem tudtam menteni: {exc}")
 
-if st.session_state.get("photo_root"):
-    work_root = Path(st.session_state["photo_root"])
+    uploaded_index = st.file_uploader("Korábbi lifelens_v7_1_index.csv betöltése", type=["csv"])
+    if uploaded_index:
+        st.session_state["df"] = pd.read_csv(uploaded_index)
+        st.success("Index betöltve.")
 
-st.sidebar.header("2. Elemzés")
-limit_scan = st.sidebar.number_input("Max. médiafájl teszthez", min_value=100, max_value=100000, value=3000, step=100)
+    st.header("3. Deep Analysis")
+    deep_threshold = st.slider("AI találati küszöb", 0.05, 0.45, 0.20, 0.01)
+    deep_limit = st.number_input("Deep Analysis max. elem / futás", min_value=50, max_value=50000, value=500, step=50)
+    st.caption("Javaslat: először 500-1000 képpel teszteld. Nagy archívumnál hosszú lehet.")
+    if CLIPModel is None or torch is None:
+        st.warning("AI csomag nincs telepítve. Futtasd: INSTALL_AI_IMAGE_RECOGNITION.bat")
 
-st.sidebar.markdown("### AI tartalomelemzés")
-use_visual_ai = st.sidebar.checkbox(
-    "Képek tényleges megnézése helyi AI-val",
-    value=False,
-    help="Bekapcsolva CLIP modellt használ helyben. Lassabb, és extra csomagok kellenek: torch, transformers."
-)
-visual_threshold = st.sidebar.slider("AI találati küszöb", 0.05, 0.40, 0.18, 0.01)
+df = st.session_state.get("df", pd.DataFrame())
 
-if use_visual_ai and (CLIPModel is None or torch is None):
-    st.sidebar.warning("Az AI képelemzéshez telepítsd: pip install torch transformers")
-
-scan_btn = st.sidebar.button("Indexelés indítása", use_container_width=True, disabled=work_root is None)
-
-if scan_btn and work_root:
-    df = scan_media(work_root, int(limit_scan), use_visual_ai=use_visual_ai, visual_threshold=float(visual_threshold))
-    st.session_state["photo_index"] = df
-    st.success("Indexelés kész.")
-
-df = st.session_state.get("photo_index", pd.DataFrame())
-
-if work_root is None:
-    st.info("Első lépés: válassz ZIP-et vagy helyi mappát a bal oldalon.")
-    st.stop()
+if not df.empty:
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "year" in df.columns:
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    if "month" in df.columns:
+        df["month"] = pd.to_numeric(df["month"], errors="coerce")
+    if "deep_analyzed" not in df.columns:
+        df["deep_analyzed"] = False
 
 if df.empty:
-    st.info("A forrás beállítva. Indítsd el az indexelést a bal oldalon.")
+    st.markdown("## Első lépés")
+    st.write("Adj meg egy helyi képmappát bal oldalon, majd indítsd a gyors indexet.")
+    st.write("Utána külön indíthatod a Deep Analysis-t, ami AI-val megnézi a képek tartalmát.")
     st.stop()
 
+st.sidebar.header("4. Slicerek")
+all_people = sorted(set(split_values(df.get("persons", pd.Series(dtype=str)))))
+all_topics = sorted(set(split_values(df.get("topics", pd.Series(dtype=str)))))
+years = sorted([int(y) for y in df["year"].dropna().unique()]) if "year" in df.columns else []
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-    "📊 Áttekintés",
-    "🔎 Keresés",
-    "🎞️ Videók",
-    "🧹 Nagytakarítás",
-    "🏷️ Kategóriák",
-    "🎯 Albumok",
-    "📦 Rendezett ZIP",
-    "📖 Fotókönyv / idővonal",
-    "🧭 Források",
-    "💻 Helyi privát futtatás",
+sel_years = st.sidebar.multiselect("Év", years, default=years)
+sel_people = st.sidebar.multiselect("Személy", all_people)
+sel_topics = st.sidebar.multiselect("Téma / korszak", all_topics)
+media_filter = st.sidebar.multiselect("Média", ["image", "video"], default=["image", "video"])
+
+if st.sidebar.button("🔥 Deep Analysis indítása", use_container_width=True):
+    df2 = run_deep_analysis(df, float(deep_threshold), int(deep_limit))
+    st.session_state["df"] = df2
+    if folder:
+        try:
+            p = Path(folder)
+            if p.exists():
+                df2.to_csv(p / "lifelens_v7_1_index.csv", index=False, encoding="utf-8-sig")
+        except Exception:
+            pass
+    st.rerun()
+
+fdf = df.copy()
+if sel_years:
+    fdf = fdf[fdf["year"].isin(sel_years)]
+if sel_people:
+    mask = fdf["persons"].fillna("").apply(lambda x: all(p in [v.strip() for v in str(x).split(",")] for p in sel_people))
+    fdf = fdf[mask]
+if sel_topics:
+    mask = fdf["topics"].fillna("").apply(lambda x: all(t in [v.strip() for v in str(x).split(",")] for t in sel_topics))
+    fdf = fdf[mask]
+if media_filter:
+    fdf = fdf[fdf["media_type"].isin(media_filter)]
+
+tabs = st.tabs([
+    "📊 Family Dashboard",
+    "🔥 Deep Analysis állapot",
+    "🧭 Korszak Explorer",
+    "🔗 Kapcsolati háló",
+    "📈 Trendek",
+    "🕵️ Elfelejtett emlékek",
+    "🖼️ Képgaléria / Album",
+    "📦 Export"
 ])
 
-with tab1:
-    st.subheader("Fotó- és videóarchívum áttekintés")
-
-    total = len(df)
-    img_count = int(df["media_type"].eq("image").sum()) if "media_type" in df.columns else 0
-    vid_count = int(df["media_type"].eq("video").sum()) if "media_type" in df.columns else 0
-    years = df["year"].nunique() if "year" in df.columns else 0
-    total_size = df["size_mb"].sum() if "size_mb" in df.columns else 0
+with tabs[0]:
+    st.subheader("Family Insights Dashboard")
+    topic_scores = compute_topic_year_scores(fdf)
+    family_scores = compute_family_scores(fdf)
+    rel = compute_relationships(fdf)
+    hidden = hidden_memories(fdf, min_age_years=3, top_n=30)
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Összes média", f"{total:,}".replace(",", " "))
-    c2.metric("Képek", img_count)
-    c3.metric("Videók", vid_count)
-    c4.metric("Évek", years)
-    c5.metric("Méret", f"{total_size:.1f} MB")
+    c1.metric("Média", len(fdf))
+    c2.metric("Deep elemzett", int(fdf.get("deep_analyzed", pd.Series(False)).fillna(False).sum()))
+    c3.metric("Témák", len(all_topics))
+    c4.metric("Korszak-jelölt", len(topic_scores[topic_scores["period_score"] >= 55]) if not topic_scores.empty else 0)
+    c5.metric("Elfelejtett emlék", len(hidden))
 
-    if "year" in df.columns:
-        st.markdown("### Évek szerinti eloszlás")
-        year_df = df.groupby(["year", "media_type"]).size().reset_index(name="Darab").dropna()
-        pivot = year_df.pivot(index="year", columns="media_type", values="Darab").fillna(0)
-        st.bar_chart(pivot)
+    st.markdown("### Top insight kártyák")
+    cards = []
+    if not topic_scores.empty:
+        top = topic_scores.iloc[0]
+        cards.append(("legerősebb korszak", f"{top['topic']} – {int(top['year'])}", f"{int(top['count'])} kép/videó · {top['share_pct']}% arány"))
+    if not rel.empty:
+        top = rel.iloc[0]
+        cards.append(("legerősebb kapcsolat", f"{top['person_a']} + {top['person_b']}", f"{int(top['count'])} közös kép/videó"))
+    if not family_scores.empty:
+        top = family_scores.sort_values("activity_index", ascending=False).iloc[0]
+        cards.append(("legaktívabb év", f"{int(top['year'])}", f"Aktivitási index: {top['activity_index']}"))
+    if not hidden.empty:
+        top = hidden.iloc[0]
+        cards.append(("rejtett emlék", str(top.get("filename","")), f"Hidden score: {top.get('hidden_score','')}"))
+    if all_topics:
+        top_topic = pd.Series(split_values(fdf.get("topics", pd.Series(dtype=str)))).value_counts().head(1)
+        if not top_topic.empty:
+            cards.append(("Family DNA főtéma", top_topic.index[0], f"{int(top_topic.iloc[0])} találat"))
 
-    show_cols = ["media_type", "filename", "date", "year", "month", "size_mb", "duration_sec", "quality_score", "category", "category_reason", "visual_tags", "visual_confidence", "tags", "folder"]
-    st.dataframe(df[[c for c in show_cols if c in df.columns]].head(300), use_container_width=True)
+    cols = st.columns(2)
+    for i, (label, title, desc) in enumerate(cards):
+        with cols[i % 2]:
+            st.markdown(f"""
+            <div class="insight-card">
+            <div class="small-muted">{label}</div>
+            <h3>{title}</h3>
+            <p>{desc}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
+    if px is not None and not topic_scores.empty:
+        st.markdown("### Top korszak-jelöltek")
+        top_chart = topic_scores.head(12).copy()
+        top_chart["label"] = top_chart["topic"] + " · " + top_chart["year"].astype(int).astype(str)
+        fig = px.bar(top_chart.sort_values("period_score"), x="period_score", y="label", orientation="h",
+                     labels={"period_score": "Korszak score", "label": ""})
+        st.plotly_chart(fig, use_container_width=True)
 
-with tab2:
-    st.subheader("Keresés képekben és videókban")
-    q = st.text_input("Mit keresel?", placeholder="pl. Balaton, karácsony, traktor, 2024, videó, screenshot")
-    result = df.copy()
+    if px is not None and not family_scores.empty:
+        st.markdown("### Családi indexek évenként")
+        fig = px.line(family_scores, x="year", y=["activity_index", "togetherness_score", "visual_positive_index"],
+                      markers=True, labels={"value": "Index", "year": "Év", "variable": "Mutató"})
+        st.plotly_chart(fig, use_container_width=True)
 
-    if q:
-        ql = q.lower().strip()
-        mask = (
-            result["filename"].fillna("").str.lower().str.contains(ql, regex=False)
-            | result["folder"].fillna("").str.lower().str.contains(ql, regex=False)
-            | result["tags"].fillna("").str.lower().str.contains(ql, regex=False)
-            | result["media_type"].fillna("").str.lower().str.contains(ql, regex=False)
-            | result["year"].fillna("").astype(str).str.contains(ql, regex=False)
-        )
-        result = result[mask]
+with tabs[1]:
+    st.subheader("Deep Analysis állapot")
+    total = len(df)
+    done = int(df.get("deep_analyzed", pd.Series(False)).fillna(False).sum())
+    st.metric("Elemzett arány", f"{done}/{total}")
+    if total:
+        st.progress(done / total)
+    st.write("A Deep Analysis a képek tényleges tartalma alapján bővíti a témákat, ezért jobb korszakokat és Family DNA-t ad.")
+    if "ai_reason" in df.columns:
+        st.dataframe(df[df.get("deep_analyzed", False).fillna(False)][["filename", "topics", "ai_topics", "ai_reason"]].head(200), use_container_width=True)
 
-    st.write(f"Találatok: **{len(result)}**")
-    st.dataframe(result[[c for c in ["media_type", "filename", "date", "duration_sec", "quality_score", "category", "category_reason", "visual_tags", "visual_confidence", "tags", "path"] if c in result.columns]].head(500), use_container_width=True)
-
-    if not result.empty:
-        st.markdown("### Gyors előnézet")
-        cols = st.columns(4)
-        for i, (_, row) in enumerate(result.head(12).iterrows()):
-            p = Path(str(row.get("preview_path") or row.get("path")))
-            if p.exists():
-                with cols[i % 4]:
-                    st.image(str(p), caption=f"{row['media_type']} · {row['filename']}", use_container_width=True)
-
-
-with tab3:
-    st.subheader("Videók")
-    videos = df[df["media_type"].eq("video")].copy()
-    if videos.empty:
-        st.info("Nem találtam videót.")
+with tabs[2]:
+    st.subheader("Korszak Explorer")
+    topic_scores = compute_topic_year_scores(fdf)
+    if topic_scores.empty:
+        st.info("Nincs elég témaadat.")
     else:
-        total_duration = videos["duration_sec"].fillna(0).sum()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Videók száma", len(videos))
-        c2.metric("Összes hossz", f"{total_duration/60:.1f} perc")
-        c3.metric("Videók mérete", f"{videos['size_mb'].sum():.1f} MB")
+        st.dataframe(topic_scores[["topic", "year", "count", "share_pct", "months", "period_score"]], use_container_width=True)
+        labels = [f"{r.topic} · {int(r.year)}" for r in topic_scores.itertuples()]
+        choice = st.selectbox("Válassz korszakot drill-downhoz", labels)
+        if choice:
+            topic, year = choice.split(" · ")
+            year = int(year)
+            sub = fdf[(fdf["year"] == year) & (fdf["topics"].fillna("").str.contains(re.escape(topic), case=False, regex=True))]
+            st.metric("Talált média", len(sub))
+            st.download_button("📦 Album ZIP ebből", create_album_zip(sub, choice), file_name=f"{safe_name(choice)}.zip", mime="application/zip")
+            st.caption("Tipp: bal oldalon tegyél rá plusz személy-szűrőt, pl. Zente.")
+            render_gallery(sub, 32)
 
-        st.dataframe(videos[["filename", "date", "duration_sec", "width", "height", "fps", "quality_score", "tags", "path"]].head(500), use_container_width=True)
-
-        st.markdown("### Preview képkockák")
-        cols = st.columns(4)
-        for i, (_, row) in enumerate(videos.sort_values("quality_score", ascending=False).head(12).iterrows()):
-            p = Path(str(row.get("preview_path", "")))
-            if p.exists():
-                with cols[i % 4]:
-                    st.image(str(p), caption=f"{row['filename']} · {row.get('duration_sec')} mp", use_container_width=True)
-
-
-with tab4:
-    st.subheader("Nagytakarítás")
-    dup = duplicate_summary(df)
-    dup_count = len(dup)
-    dup_size = dup["size_mb"].sum() if not dup.empty and "size_mb" in dup.columns else 0
-    screenshots = int(df.get("is_screenshot", pd.Series(dtype=bool)).fillna(False).sum()) if "is_screenshot" in df.columns else 0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Pontos duplikátum sorok", dup_count)
-    c2.metric("Duplikátumok mérete", f"{dup_size:.1f} MB")
-    c3.metric("Screenshotok", screenshots)
-
-    if dup.empty:
-        st.success("Nem találtam pontos MD5 duplikátumot.")
+with tabs[3]:
+    st.subheader("Kapcsolati háló")
+    rel = compute_relationships(fdf)
+    if rel.empty:
+        st.info("A hálóhoz személycímkék kellenek. Első körben fájlnév/mappa alapján működik, később jöhet arcfelismerés-tanítás.")
     else:
-        st.dataframe(dup[["duplicate_group", "media_type", "filename", "size_mb", "path"]].head(1000), use_container_width=True)
+        st.dataframe(rel, use_container_width=True)
+        if go is not None and nx is not None:
+            G = nx.Graph()
+            for _, r in rel.iterrows():
+                G.add_edge(r["person_a"], r["person_b"], weight=int(r["count"]))
+            pos = nx.spring_layout(G, seed=7)
+            edge_x, edge_y = [], []
+            for edge in G.edges():
+                x0, y0 = pos[edge[0]]
+                x1, y1 = pos[edge[1]]
+                edge_x += [x0, x1, None]
+                edge_y += [y0, y1, None]
+            node_x, node_y, text = [], [], []
+            for node in G.nodes():
+                x, y = pos[node]
+                node_x.append(x); node_y.append(y); text.append(node)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=2), hoverinfo="none"))
+            fig.add_trace(go.Scatter(x=node_x, y=node_y, mode="markers+text", text=text, textposition="top center",
+                                     marker=dict(size=28), hoverinfo="text"))
+            fig.update_layout(showlegend=False, margin=dict(l=10,r=10,t=10,b=10), height=500)
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Gyenge minőség gyanús média")
-    lowq = df.sort_values("quality_score", ascending=True).head(100)
-    st.dataframe(lowq[["media_type", "filename", "quality_score", "size_mb", "path"]], use_container_width=True)
-
-
-
-with tab5:
-    st.subheader("🏷️ Kategóriák")
-    st.caption("A kategorizálás most már a teljes mappaútvonalat, fájlnevet, dátumot, média típust és szabályokat is figyeli.")
-
-    if "category" not in df.columns:
-        df = add_categories(df)
-
-    cat_summary = (
-        df.groupby(["category", "media_type"])
-        .size()
-        .reset_index(name="Darab")
-        .sort_values("Darab", ascending=False)
-    )
-    st.markdown("### Kategória eloszlás")
-    if "visual_tags" in df.columns and df["visual_tags"].fillna("").astype(str).str.len().sum() > 0:
-        st.success("AI tartalomelemzés adatok is vannak az indexben.")
+with tabs[4]:
+    st.subheader("Érdeklődési trendek")
+    ex = explode_values(fdf, "topics")
+    if ex.empty:
+        st.info("Nincs témaadat.")
     else:
-        st.info("Jelenleg nincs AI vizuális címkézés az indexben. Ha IMG_1234 jellegű fájlneveid vannak, kapcsold be bal oldalt: Képek tényleges megnézése helyi AI-val.")
-    st.dataframe(cat_summary, use_container_width=True)
+        top_topics = pd.Series(ex["value"]).value_counts().head(8).index.tolist()
+        chosen = st.multiselect("Témák", sorted(set(ex["value"])), default=top_topics[:5])
+        trend = ex[ex["value"].isin(chosen)].groupby(["year", "value"]).size().reset_index(name="count")
+        if px is not None and not trend.empty:
+            fig = px.line(trend, x="year", y="count", color="value", markers=True, labels={"count": "Kép/videó", "year": "Év", "value": "Téma"})
+            st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(trend, use_container_width=True)
 
-    try:
-        pivot_cat = cat_summary.pivot(index="category", columns="media_type", values="Darab").fillna(0)
-        st.bar_chart(pivot_cat)
-    except Exception:
-        pass
-
-    st.markdown("### Kategória ellenőrző lista")
-    show_cols = ["media_type", "filename", "category", "category_reason", "visual_tags", "visual_confidence", "tags", "folder", "path"]
-    st.dataframe(df[[c for c in show_cols if c in df.columns]].head(1000), use_container_width=True)
-
-    cats = sorted(df["category"].dropna().unique().tolist())
-    if cats:
-        selected_cat = st.selectbox("Előnézet kategória alapján", cats)
-        cat_df = df[df["category"].eq(selected_cat)].sort_values("quality_score", ascending=False)
-        st.write(f"Találatok: **{len(cat_df)}**")
-        render_preview_grid(cat_df, 16)
-
-    cat_csv = df.drop(columns=["md5", "phash"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "Kategorizált index CSV letöltése",
-        data=cat_csv,
-        file_name="LifeLens_kategorizalt_index.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-
-
-with tab6:
-    st.subheader("Albumok")
-    album_mode = st.selectbox("Album típusa", ["Top képek és videók", "Top fotók", "Top videók", "Családi / esemény válogatás", "Karácsony", "Nyár / nyaralás", "Gyerek / család", "Sport / foci", "Járművek"])
-    top_n = st.slider("Médiafájlok száma", 10, 500, 80, step=10)
-    album = build_album(df, album_mode, top_n)
-
-    st.write(f"Album elemek: **{len(album)}**")
-    st.dataframe(album[[c for c in ["media_type", "filename", "date", "duration_sec", "quality_score", "category", "category_reason", "visual_tags", "visual_confidence", "tags", "path"] if c in album.columns]].head(500), use_container_width=True)
-
-    if not album.empty:
-        cols = st.columns(4)
-        for i, (_, row) in enumerate(album.head(16).iterrows()):
-            p = Path(str(row.get("preview_path") or row.get("path")))
-            if p.exists():
-                with cols[i % 4]:
-                    st.image(str(p), caption=f"{row['media_type']} · {row['filename']}", use_container_width=True)
-
-        html_bytes = create_html_album(album, f"LifeLens album – {album_mode}", max_items=top_n)
-        st.download_button(
-            "HTML album index letöltése",
-            data=html_bytes,
-            file_name=f"LifeLens_album_{safe_name(album_mode)}.html",
-            mime="text/html",
-            use_container_width=True,
-        )
-
-
-with tab7:
-    st.subheader("Rendezett ZIP export")
-    st.caption("Az eredeti fájlokat nem törli és nem mozgatja. Új ZIP-et készít másolatokkal.")
-
-    structure = st.selectbox("Mappastruktúra", ["Év / hónap", "Téma szerint", "Év / téma"])
-    include_mode = st.selectbox("Mit tegyen bele?", ["Minden média", "Duplikátumok nélkül", "Screenshotok nélkül", "Csak top média", "Csak képek", "Csak videók"])
-    export_top_n = st.slider("Top média száma, ha azt választod", 50, 2000, 500, step=50)
-
-    if st.button("Rendezett ZIP elkészítése", use_container_width=True):
-        with st.spinner("ZIP készítése..."):
-            zip_bytes = create_organized_zip(df, structure, include_mode, export_top_n)
-            st.session_state["organized_zip"] = zip_bytes
-        st.success("ZIP elkészült.")
-
-    if st.session_state.get("organized_zip"):
-        st.download_button(
-            "Rendezett ZIP letöltése",
-            data=st.session_state["organized_zip"],
-            file_name=f"LifeLens_Rendezett_{safe_name(structure)}.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
-
-
-
-with tab8:
-    st.subheader("📖 Fotókönyv / családi idővonal")
-    st.markdown(
-        """
-        Tartalmas idővonal a feltöltött/indexelt média alapján:
-
-        - éves összesítés,
-        - havi bontás,
-        - legaktívabb napok,
-        - eseménygyanús napok,
-        - előnézeti képek/videóképkockák,
-        - fotókönyv-alapanyag válogatás.
-        """
-    )
-
-    year_summary, month_summary, day_summary = build_timeline_tables(df)
-
-    if year_summary.empty:
-        st.warning("Nincs használható dátumadat az idővonalhoz.")
+with tabs[5]:
+    st.subheader("Elfelejtett emlékek")
+    min_age = st.slider("Minimum életkor évben", 1, 10, 3)
+    hidden = hidden_memories(fdf, min_age_years=min_age, top_n=100)
+    if hidden.empty:
+        st.info("Nincs találat.")
     else:
-        st.markdown("### Éves idővonal")
-        st.dataframe(year_summary, use_container_width=True)
-        st.bar_chart(year_summary.set_index("year")[["media_count", "photos", "videos"]])
+        st.dataframe(hidden[["filename", "date", "topics", "persons", "quality_score", "hidden_score"]], use_container_width=True)
+        st.download_button("📦 Hidden Memories album ZIP", create_album_zip(hidden, "hidden_memories"), file_name="hidden_memories.zip", mime="application/zip")
+        render_gallery(hidden, 40)
 
-        available_years = sorted(year_summary["year"].dropna().astype(int).tolist(), reverse=True)
-        selected_year = st.selectbox("Év kiválasztása", available_years)
+with tabs[6]:
+    st.subheader("Képgaléria / Album")
+    st.write(f"A jelenlegi slicerek alapján: **{len(fdf)}** média.")
+    sort_by = st.selectbox("Rendezés", ["date", "quality_score", "filename"], index=0)
+    asc = st.checkbox("Növekvő", value=True)
+    gallery = fdf.sort_values(sort_by, ascending=asc, na_position="last") if sort_by in fdf.columns else fdf
+    st.download_button("📦 Album ZIP a jelenlegi szűrésből", create_album_zip(gallery, "filtered_album"), file_name="filtered_album.zip", mime="application/zip")
+    render_gallery(gallery, 60)
 
-        date_series = pd.to_datetime(df["date"], errors="coerce")
-        year_df = df[date_series.dt.year.eq(selected_year)].copy()
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Médiafájl", len(year_df))
-        c2.metric("Kép", int(year_df["media_type"].eq("image").sum()))
-        c3.metric("Videó", int(year_df["media_type"].eq("video").sum()))
-        c4.metric("Méret", f"{year_df['size_mb'].sum():.1f} MB")
-
-        st.markdown("### Havi bontás")
-        ym = month_summary[month_summary["year"].eq(selected_year)].copy()
-        if not ym.empty:
-            st.dataframe(ym, use_container_width=True)
-            st.bar_chart(ym.set_index("year_month")[["media_count", "photos", "videos"]])
-
-        st.markdown("### Legaktívabb / eseménygyanús napok")
-        yd = year_df.copy()
-        yd["day"] = pd.to_datetime(yd["date"], errors="coerce").dt.date
-        active_days = (
-            yd.dropna(subset=["day"])
-            .groupby("day")
-            .agg(
-                media_count=("path", "count"),
-                photos=("media_type", lambda s: int((s == "image").sum())),
-                videos=("media_type", lambda s: int((s == "video").sum())),
-                avg_quality=("quality_score", "mean"),
-            )
-            .reset_index()
-            .sort_values("media_count", ascending=False)
-            .head(20)
-        )
-        st.dataframe(active_days, use_container_width=True)
-
-        if not active_days.empty:
-            selected_day = st.selectbox("Nap előnézete", active_days["day"].astype(str).tolist())
-            day_df = yd[yd["day"].astype(str).eq(selected_day)].sort_values("quality_score", ascending=False)
-            st.write(f"{selected_day} · médiafájlok: **{len(day_df)}**")
-            render_preview_grid(day_df, 16)
-
-        st.markdown("### Fotókönyv-alapanyag javaslat")
-        album_base = year_df[
-            ~year_df.get("is_screenshot", pd.Series(False, index=year_df.index)).fillna(False)
-        ].sort_values("quality_score", ascending=False).head(120)
-
-        st.caption("Ez most minőségpontszám + screenshot kizárás alapján készül. Később ebből PDF fotókönyv is lehet.")
-        st.dataframe(
-            album_base[[c for c in ["media_type", "filename", "date", "quality_score", "category", "visual_tags", "tags", "path"] if c in album_base.columns]],
-            use_container_width=True
-        )
-        render_preview_grid(album_base, 16)
-
-        html_bytes = create_html_album(album_base, f"LifeLens {selected_year} családi album alapanyag", max_items=120)
-        st.download_button(
-            f"{selected_year} HTML album index letöltése",
-            data=html_bytes,
-            file_name=f"LifeLens_{selected_year}_album_index.html",
-            mime="text/html",
-            use_container_width=True,
-        )
-
-        story_html = create_story_album_html(album_base, f"LifeLens {selected_year} családi fotókönyv", max_items=160)
-        st.download_button(
-            f"{selected_year} látványos HTML fotókönyv letöltése",
-            data=story_html,
-            file_name=f"LifeLens_{selected_year}_fotokonyv.html",
-            mime="text/html",
-            use_container_width=True,
-        )
-
-
-with tab9:
-    st.subheader("Források és későbbi csatlakozók")
-    st.markdown(
-        """
-        **Google Drive**
-        - OAuth belépés
-        - Drive mappák listázása
-        - képek/videók indexelése
-        - export új Drive mappába
-
-        **OneDrive**
-        - Microsoft OAuth
-        - képek/videók listázása
-        - rendezett export OneDrive-ba
-
-        **Telefon**
-        - első körben telefon backup mappa
-        - később mobilapp
-
-        **Google Photos**
-        - lehetséges, de API-korlátok miatt későbbi kör
-
-        **Helyi desktop verzió**
-        - ez lenne a legprivátabb
-        - nem kell feltölteni semmit
-        - közvetlenül tud mappát/HDD-t/NAS-t olvasni
-        """
-    )
-
-
-with tab10:
-    st.subheader("💻 Helyi privát futtatás")
-    st.markdown(
-        """
-        Ez a rész azoknak szól, akik **nem szeretnék feltölteni** a családi képeiket/videóikat online felületre.
-
-        **A legbiztonságosabb működés:**
-        - az app a saját gépeden fut,
-        - helyi mappát vagy külső meghajtót olvas,
-        - a képek nem mennek fel szerverre,
-        - az eredeti képeket nem törli és nem mozgatja.
-        """
-    )
-
-    st.info(
-        "Online Streamlit Cloudon a helyi C:\\ vagy D:\\ útvonal nem működik, mert a felhős szerver nem látja a saját géped meghajtóit. "
-        "Helyi futtatásnál viszont működik."
-    )
-
-    st.markdown("### 1. Python telepítése, ha még nincs")
-    st.markdown(
-        """
-        Töltsd le a hivatalos Python telepítőt a Python oldaláról.  
-        Telepítéskor fontos: **Add Python to PATH** legyen bepipálva.
-        """
-    )
-    st.link_button("Python letöltése – hivatalos oldal", "https://www.python.org/downloads/")
-
-    st.markdown("### 2. Dupla kattintós indító / telepítő csomag")
-    st.markdown(
-        """
-        A csomagban van:
-        - `RUN_SOURCE_LOCAL.bat` – gyors helyi futtatás,
-        - `BUILD_EXE_WINDOWS.bat` – Windows EXE készítés,
-        - `BUILD_INSTALLER_WINDOWS.bat` – telepítő készítés Inno Setup-pal,
-        - adatvédelmi szöveg és útmutató.
-        """
-    )
-
-    render_desktop_download_button("local_tab")
-
-    st.markdown("### 3. Használat egyszerűen")
-    st.code(
-        """1. ZIP kicsomagolása például: C:\\LifeLens
-2. Dupla katt: RUN_SOURCE_LOCAL.bat
-3. Megnyílik: http://localhost:8501
-4. Helyi mappa útvonala működni fog, pl. C:\\Users\\T470\\Desktop\\Foto_App""",
-        language="text",
-    )
-
-    st.markdown("### Miért nem lehet egy online appból Python-telepítést indítani?")
-    st.markdown(
-        """
-        A böngésző biztonsági okból nem engedi, hogy egy webapp programokat telepítsen a gépedre vagy közvetlenül olvassa a mappáidat.  
-        Ez jó dolog: ettől biztonságosabb a géped. Ezért kell a helyi indítócsomag vagy később egy rendes Windows telepítő.
-        """
-    )
+with tabs[7]:
+    st.subheader("Export")
+    st.download_button("⬇ Index CSV letöltése", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_1_filtered_index.csv", mime="text/csv")
+    full_scores = compute_topic_year_scores(df)
+    if not full_scores.empty:
+        st.download_button("⬇ Korszak score CSV", full_scores.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_1_period_scores.csv", mime="text/csv")
+    st.caption("Későbbi V7.2: személytanítás / arcfelismerés, PDF dashboard export, HTML Family Wrapped.")
