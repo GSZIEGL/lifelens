@@ -3,6 +3,3 @@ pandas
 numpy
 pillow
 opencv-python
-# opcionális AI tartalomelemzéshez:
-# torch
-# transformers
