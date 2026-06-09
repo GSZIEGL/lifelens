@@ -39,7 +39,7 @@ except Exception:
     CLIPProcessor = None
 
 
-APP_TITLE = "LifeLens V7.1 – Family Analytics + Deep Analysis"
+APP_TITLE = "LifeLens V7.2 – Family Analytics + Folder Picker"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -87,6 +87,22 @@ EVENT_KEYWORDS = {
 ACTIVE_TOPICS = {"bicikli", "foci", "nyaralás", "játszótér", "kirándulás", "traktor", "strand", "hegy"}
 MOOD_POSITIVE_TOPICS = {"karácsony", "születésnap", "nyaralás", "játszótér", "fagyi", "torta", "strand"}
 
+
+def pick_folder_dialog():
+    """Helyi mappatallózó. Csak lokális futtatásnál működik jól."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        folder = filedialog.askdirectory(title="Válaszd ki a képmappát")
+        root.destroy()
+        return folder or ""
+    except Exception as exc:
+        return "__ERROR__" + str(exc)
+
+
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
 
 st.markdown("""
@@ -110,12 +126,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V7.1 – Family Analytics")
-st.caption("Helyi családi képelemző dashboard · gyors index + opcionális Deep Analysis")
+st.title("📊 LifeLens V7.2 – Family Analytics")
+st.caption("Helyi családi képelemző dashboard · gyors index + opcionális Deep Analysis + mappatallózás")
 
 st.markdown("""
 <div class="deep-box">
-<b>V7.1 újdonság:</b> az app először gyors indexet készít. 
+<b>V7.2 újdonság:</b> az app először gyors indexet készít. 
 Utána külön elindítható a <b>Deep Analysis</b>, amely helyi CLIP AI-val mélyebben elemzi a képtartalmat.
 </div>
 """, unsafe_allow_html=True)
@@ -520,8 +536,36 @@ if "work_dir" not in st.session_state:
 
 with st.sidebar:
     st.header("1. Forrás")
-    folder = st.text_input("Helyi képmappa útvonala", value="")
-    st.caption("Példa: C:\\Users\\Gabor\\Pictures vagy külső HDD mappája")
+
+    if "selected_folder" not in st.session_state:
+        st.session_state["selected_folder"] = ""
+
+    if st.button("📁 Mappa kiválasztása tallózással", use_container_width=True):
+        picked = pick_folder_dialog()
+        if picked.startswith("__ERROR__"):
+            st.error("A tallózó ablak nem indult el. Használd a kézi útvonalmezőt.")
+            st.caption(picked.replace("__ERROR__", ""))
+        elif picked:
+            st.session_state["selected_folder"] = picked
+            st.success(f"Kiválasztva: {picked}")
+
+    folder = st.text_input(
+        "Helyi képmappa útvonala",
+        value=st.session_state.get("selected_folder", ""),
+        help="Ha a tallózás nem működik, másold be ide az Intéző címsorából az útvonalat."
+    )
+    st.session_state["selected_folder"] = folder
+
+    if folder:
+        p_check = Path(folder)
+        if p_check.exists() and p_check.is_dir():
+            st.success("✅ Mappa elérhető")
+        else:
+            st.warning("⚠️ Ezt az útvonalat a Python jelenleg nem találja.")
+            st.caption("Tipp: lehet OneDrive Desktop. Próbáld: C:\Users\T470\OneDrive\Desktop\Emese")
+
+    st.caption("Példa: C:\Users\T470\Desktop\Emese vagy C:\Users\T470\OneDrive\Desktop\Emese")
+
 
     st.header("2. Gyors index")
     limit = st.number_input("Max. fájl első teszthez", min_value=100, max_value=200000, value=3000, step=100)
@@ -532,14 +576,14 @@ with st.sidebar:
         else:
             df = scan_media(p, int(limit))
             st.session_state["df"] = df
-            save_path = p / "lifelens_v7_1_index.csv"
+            save_path = p / "lifelens_v7_2_index.csv"
             try:
                 df.to_csv(save_path, index=False, encoding="utf-8-sig")
                 st.success(f"Index mentve: {save_path}")
             except Exception as exc:
                 st.warning(f"Index készült, de nem tudtam menteni: {exc}")
 
-    uploaded_index = st.file_uploader("Korábbi lifelens_v7_1_index.csv betöltése", type=["csv"])
+    uploaded_index = st.file_uploader("Korábbi lifelens_v7_2_index.csv betöltése", type=["csv"])
     if uploaded_index:
         st.session_state["df"] = pd.read_csv(uploaded_index)
         st.success("Index betöltve.")
@@ -586,7 +630,7 @@ if st.sidebar.button("🔥 Deep Analysis indítása", use_container_width=True):
         try:
             p = Path(folder)
             if p.exists():
-                df2.to_csv(p / "lifelens_v7_1_index.csv", index=False, encoding="utf-8-sig")
+                df2.to_csv(p / "lifelens_v7_2_index.csv", index=False, encoding="utf-8-sig")
         except Exception:
             pass
     st.rerun()
@@ -766,8 +810,8 @@ with tabs[6]:
 
 with tabs[7]:
     st.subheader("Export")
-    st.download_button("⬇ Index CSV letöltése", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_1_filtered_index.csv", mime="text/csv")
+    st.download_button("⬇ Index CSV letöltése", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_2_filtered_index.csv", mime="text/csv")
     full_scores = compute_topic_year_scores(df)
     if not full_scores.empty:
-        st.download_button("⬇ Korszak score CSV", full_scores.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_1_period_scores.csv", mime="text/csv")
-    st.caption("Későbbi V7.2: személytanítás / arcfelismerés, PDF dashboard export, HTML Family Wrapped.")
+        st.download_button("⬇ Korszak score CSV", full_scores.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_2_period_scores.csv", mime="text/csv")
+    st.caption("Későbbi V7.3: személytanítás / arcfelismerés, PDF dashboard export, HTML Family Wrapped.")
