@@ -33,7 +33,7 @@ BlipProcessor = None
 BlipForConditionalGeneration = None
 
 
-APP_TITLE = "LifeLens V9.1 – Cloud Safe Caption Vision"
+APP_TITLE = "LifeLens V9.2 – Cloud Safe Fix"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -279,11 +279,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V9.1 – Family Analytics")
+st.title("📊 LifeLens V9.2 – Family Analytics")
 st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V9.1 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A V9.2 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
     "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
@@ -802,12 +802,13 @@ def render_gallery(rows_df: pd.DataFrame, max_items=24):
 
 
 def safe_plotly_chart(fig, data_df=None, message="Nincs elég adat a diagramhoz."):
-    if data_df is not None and (data_df is None or len(data_df) == 0):
+    """Biztonságos Plotly megjelenítés üres diagram-boxok ellen."""
+    if data_df is not None and len(data_df) == 0:
         st.info(message)
     elif fig is None:
         st.info(message)
     else:
-        safe_plotly_chart(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def filter_by_topic_year(df, topic, year=None):
