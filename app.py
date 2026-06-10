@@ -27,14 +27,16 @@ except Exception:
 
 try:
     import torch
-    from transformers import CLIPModel, CLIPProcessor
+    from transformers import CLIPModel, CLIPProcessor, BlipProcessor, BlipForConditionalGeneration
 except Exception:
     torch = None
     CLIPModel = None
     CLIPProcessor = None
+    BlipProcessor = None
+    BlipForConditionalGeneration = None
 
 
-APP_TITLE = "LifeLens V8.6 – Family Analytics + Safe AI Review"
+APP_TITLE = "LifeLens V9 – Family Analytics + Caption Vision"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -177,6 +179,63 @@ def ai_detect_topics(img: Image.Image, threshold: float = 0.18):
     return selected[:8], reason
 
 
+
+CAPTION_TOPIC_KEYWORDS = {
+    "vonat": ["train", "railway", "locomotive"],
+    "traktor": ["tractor"],
+    "autó": ["car", "vehicle"],
+    "bicikli": ["bicycle", "bike", "cycling"],
+    "foci": ["soccer", "football", "ball"],
+    "túrázás": ["hiking", "trail", "forest", "mountain", "walking"],
+    "hegy": ["mountain", "mountains"],
+    "nyaralás": ["vacation", "holiday", "travel", "trip"],
+    "strand": ["beach", "sea", "sand"],
+    "állatkert": ["zoo", "giraffe", "elephant", "animal enclosure"],
+    "kutya": ["dog", "puppy"],
+    "rajz": ["drawing", "draw", "painting", "crayons", "pencils"],
+    "gitár": ["guitar"],
+    "sakk": ["chess", "chessboard"],
+    "karácsony": ["christmas", "christmas tree", "presents"],
+    "születésnap": ["birthday", "birthday cake", "cake with candles"],
+    "játszótér": ["playground", "swing", "slide"],
+    "plüss": ["stuffed animal", "teddy bear", "plush"],
+    "fagyi": ["ice cream", "popsicle"],
+}
+
+
+@st.cache_resource(show_spinner=False)
+def load_caption_model():
+    if BlipProcessor is None or BlipForConditionalGeneration is None or torch is None:
+        return None, None, None
+    model_name = "Salesforce/blip-image-captioning-base"
+    processor = BlipProcessor.from_pretrained(model_name)
+    model = BlipForConditionalGeneration.from_pretrained(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    model.eval()
+    return model, processor, device
+
+
+def caption_image(img: Image.Image) -> str:
+    model, processor, device = load_caption_model()
+    if model is None:
+        return ""
+    inputs = processor(img, return_tensors="pt").to(device)
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=35)
+    caption = processor.decode(out[0], skip_special_tokens=True)
+    return str(caption or "").strip()
+
+
+def topics_from_caption(caption: str):
+    text = str(caption or "").lower()
+    found = []
+    for topic, words in CAPTION_TOPIC_KEYWORDS.items():
+        if any(w in text for w in words):
+            found.append(topic)
+    return sorted(set(found))
+
+
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
 
 st.markdown("""
@@ -201,11 +260,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V8.6 – Family Analytics")
+st.title("📊 LifeLens V9 – Family Analytics")
 st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V8.6 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A V9 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
     "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
@@ -400,14 +459,12 @@ def load_demo_zip(uploaded_zip) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("date")
 
 
-def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: float = 0.35, max_ai_topics: int = 2, excluded_ai_topics=None, auto_apply_ai: bool = False) -> pd.DataFrame:
+def scan_zip(uploaded_file, limit: int, use_ai: bool = False, vision_mode: str = "caption", auto_apply_ai: bool = True) -> pd.DataFrame:
     """Saját ZIP indexelése.
     Ha a ZIP tartalmaz demo_family_metadata.csv vagy lifelens_metadata.csv fájlt, akkor metadata alapján töltünk.
     Egyébként csak fájlnév/mappanév alapján címkézünk, hogy ne hozzon mindent minden szűrésnél.
     """
     temp_root = Path(tempfile.mkdtemp(prefix="lifelens_zip_"))
-    if excluded_ai_topics is None:
-        excluded_ai_topics = []
     with zipfile.ZipFile(uploaded_file) as z:
         z.extractall(temp_root)
 
@@ -483,21 +540,23 @@ def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: floa
 
             topics = infer_topics_from_path(p)
             ai_reason = ""
+            ai_caption = ""
+            ai_topics = []
             if use_ai:
-                if CLIPModel is None or torch is None:
-                    pass
-                else:
-                    try:
-                        with Image.open(p) as ai_img:
-                            ai_img = ImageOps.exif_transpose(ai_img).convert("RGB")
-                            ai_topics, ai_reason = ai_detect_topics(ai_img, threshold=ai_threshold)
-                            ai_topics = [t for t in ai_topics if t not in excluded_ai_topics][:max_ai_topics]
-                            # V8.6: az AI alapból csak javaslat, nem automatikus címke.
-                            # Automatikusan csak akkor kerül a topics mezőbe, ha a felhasználó külön bekapcsolja.
-                            if auto_apply_ai:
-                                topics = sorted(set(topics) | set(ai_topics))
-                    except Exception as _exc:
-                        ai_reason = f"AI hiba: {_exc}"
+                try:
+                    with Image.open(p) as ai_img:
+                        ai_img = ImageOps.exif_transpose(ai_img).convert("RGB")
+                        if vision_mode == "caption":
+                            ai_caption = caption_image(ai_img)
+                            ai_topics = topics_from_caption(ai_caption)
+                            ai_reason = ai_caption
+                        else:
+                            ai_topics, ai_reason = ai_detect_topics(ai_img, threshold=0.45)
+                            ai_topics = ai_topics[:2]
+                        if auto_apply_ai:
+                            topics = sorted(set(topics) | set(ai_topics))
+                except Exception as _exc:
+                    ai_reason = f"AI hiba: {_exc}"
             main_topic = topics[0] if topics else ""
             rows.append({
                 "media_id": f"user_{i}",
@@ -515,6 +574,7 @@ def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: floa
                 "quality_score": q,
                 "persons": "",
                 "topics": ", ".join(topics),
+                "ai_caption": ai_caption if "ai_caption" in locals() else "",
                 "ai_suggestions": ", ".join(ai_topics) if "ai_topics" in locals() else "",
                 "ai_reason": ai_reason if "ai_reason" in locals() else "",
                 "ai_analyzed": bool(use_ai),
@@ -721,6 +781,16 @@ def render_gallery(rows_df: pd.DataFrame, max_items=24):
                 st.write(row.get("filename", ""))
 
 
+
+def safe_plotly_chart(fig, data_df=None, message="Nincs elég adat a diagramhoz."):
+    if data_df is not None and (data_df is None or len(data_df) == 0):
+        st.info(message)
+    elif fig is None:
+        st.info(message)
+    else:
+        safe_plotly_chart(fig)
+
+
 def filter_by_topic_year(df, topic, year=None):
     mask = df["topics"].fillna("").apply(lambda x: topic in [v.strip() for v in str(x).split(",")])
     out = df[mask]
@@ -763,27 +833,21 @@ with st.sidebar:
             st.success("Demo Family Alpha betöltve.")
 
     st.caption("Saját adatokkal csak teszt jelleggel:")
-    st.caption("V8.6: az AI alapból csak javaslatot ad. Így a téves AI címkék nem rontják el a szűrést.")
+    st.caption("V9: ajánlott mód a caption-alapú képfelismerés. Előbb képleírást készít, és csak abból címkéz.")
     use_ai_for_zip = st.checkbox("AI képfelismerés futtatása saját ZIP-re", value=False)
-    ai_threshold = st.slider(
-        "AI szigorúság / küszöb",
-        0.10, 0.70, 0.35, 0.01,
-        help="Magasabb érték = kevesebb, de biztosabb javaslat. Javaslat: 0.35–0.50."
-    )
-    max_ai_topics = st.slider("Max. AI javaslat képenként", 1, 5, 2)
-    excluded_ai_topics = st.multiselect(
-        "Kizárt AI kategóriák",
-        sorted(AI_TOPIC_PROMPTS.keys()) if "AI_TOPIC_PROMPTS" in globals() else [],
-        default=[],
-        help="Ha például nincs gitár/fagyi a csomagban, zárd ki ezeket."
+    vision_mode = st.radio(
+        "AI felismerési mód",
+        ["caption", "clip"],
+        index=0,
+        help="caption = képleírás alapú, stabilabb. clip = régi kísérleti hasonlósági címkézés."
     )
     auto_apply_ai = st.checkbox(
-        "Kísérleti: AI javaslatok automatikus címkévé alakítása",
-        value=False,
-        help="Ha kikapcsolva marad, az AI csak javaslatot ad az AI ellenőrzés fülön, és nem befolyásolja a szűrőket."
+        "AI caption alapján automatikus címkézés",
+        value=True,
+        help="Caption módban ezt érdemes bekapcsolni, mert csak konkrét szavak alapján címkéz."
     )
-    if use_ai_for_zip and (CLIPModel is None or torch is None):
-        st.warning("AI-hoz kell a requirements_ai.txt vagy: torch + transformers.")
+    if use_ai_for_zip and vision_mode == "caption" and (BlipProcessor is None or torch is None):
+        st.warning("Caption AI-hoz kell: torch + transformers.")
     user_zip = st.file_uploader("Saját képek ZIP-ben", type=["zip"], key="user_zip")
     if user_zip is not None and st.button("Saját ZIP indexelése", use_container_width=True):
         limit = FREE_IMAGE_LIMIT if not is_premium() else 5000
@@ -791,9 +855,7 @@ with st.sidebar:
             user_zip,
             limit,
             use_ai=use_ai_for_zip,
-            ai_threshold=ai_threshold,
-            max_ai_topics=max_ai_topics,
-            excluded_ai_topics=excluded_ai_topics,
+            vision_mode=vision_mode,
             auto_apply_ai=auto_apply_ai,
         )
         st.success("Saját ZIP index kész.")
@@ -839,7 +901,7 @@ if "demo" in fdf.columns and not bool(fdf["demo"].fillna(False).any()):
     if unlabeled:
         st.warning(
             f"Saját képek: {unlabeled} képhez nincs címke. "
-            "Kapcsold be az AI képfelismerést, vagy adj metadata CSV-t a pontosabb szűréshez."
+            "Kapcsold be a caption-alapú AI képfelismerést, vagy adj metadata CSV-t a pontosabb szűréshez."
         )
 
 if "ai_suggestions" in fdf.columns and fdf["ai_suggestions"].fillna("").str.strip().ne("").any() and not fdf["topics"].fillna("").str.contains(",").any():
@@ -932,7 +994,7 @@ with tabs[0]:
                 orientation="h",
                 labels={"era_score": "Era score", "label": ""},
             )
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
             st.caption("Kattintás helyett stabil drill-down: válassz az alábbi gyorsgombok közül.")
 
         if not period_cards.empty:
@@ -952,7 +1014,7 @@ with tabs[0]:
                 values="dna_score",
                 hole=0.45,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
             if not family_dna.empty:
                 dna_cols = st.columns(min(3, len(family_dna)))
                 for i, (_, r) in enumerate(family_dna.head(3).iterrows()):
@@ -975,7 +1037,7 @@ with tabs[1]:
             top_topics = yt.groupby("topic")["era_score"].max().sort_values(ascending=False).head(6).index.tolist()
             trend = yt[yt["topic"].isin(top_topics)]
             fig = px.line(trend, x="year", y="share_pct", color="topic", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
 
         if not period_cards.empty:
             labels = [f"{r.topic} · {int(r.year)} · score {r.era_score}" for r in period_cards.itertuples()]
@@ -1000,7 +1062,7 @@ with tabs[2]:
         st.dataframe(family_dna[["category", "count", "share_pct", "years", "months", "trend_pp", "dna_score"]], use_container_width=True)
         if px is not None:
             fig = px.bar(family_dna.sort_values("dna_score"), x="dna_score", y="category", orientation="h")
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
 
         st.markdown("### Kategória drill-down")
         cat_choice = st.selectbox("Válassz Family DNA kategóriát", family_dna["category"].tolist(), key="dna_category_select")
@@ -1020,7 +1082,7 @@ with tabs[3]:
         st.dataframe(nostalgia[["year_month", "topic", "count", "age_years", "era_strength", "nostalgia_score"]], use_container_width=True)
         if px is not None:
             fig = px.bar(nostalgia.sort_values("nostalgia_score"), x="nostalgia_score", y="year_month", color="topic", orientation="h")
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
 
         labels = [f"{r.year_month} · {r.topic} · score {r.nostalgia_score}" for r in nostalgia.itertuples()]
         choice = st.selectbox("Válassz hidden memory csomagot", labels)
@@ -1067,7 +1129,7 @@ with tabs[4]:
                 text.append(node)
             fig.add_trace(go.Scatter(x=node_x, y=node_y, mode="markers+text", text=text, textposition="top center", marker=dict(size=32), hoverinfo="text", showlegend=False))
             fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=10, b=10), height=520)
-            st.plotly_chart(fig, use_container_width=True)
+            safe_plotly_chart(fig)
 
         st.markdown("### Kapcsolat drill-down")
         rel_labels = [f"{r.person_a} + {r.person_b} · {int(r.count)} kép" for r in relationships.itertuples()]
@@ -1114,7 +1176,7 @@ with tabs[6]:
     st.download_button(
         "⬇ Index CSV",
         fdf.to_csv(index=False).encode("utf-8-sig"),
-        file_name="lifelens_v8_6_index.csv",
+        file_name="lifelens_v9_index.csv",
         mime="text/csv",
         use_container_width=True,
     )
@@ -1122,7 +1184,7 @@ with tabs[6]:
         st.download_button(
             "⬇ Korszak score CSV",
             period_cards.to_csv(index=False).encode("utf-8-sig"),
-            file_name="lifelens_v8_6_period_scores.csv",
+            file_name="lifelens_v9_period_scores.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -1130,7 +1192,7 @@ with tabs[6]:
         st.download_button(
             "⬇ Family DNA CSV",
             family_dna.to_csv(index=False).encode("utf-8-sig"),
-            file_name="lifelens_v8_6_family_dna.csv",
+            file_name="lifelens_v9_family_dna.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -1138,7 +1200,7 @@ with tabs[6]:
 with tabs[7]:
     st.subheader("AI ellenőrzés / címkék finomhangolása")
     st.write("Itt látszik, melyik kép milyen AI címkét kapott. Ha sok a téves címke, emeld az AI küszöböt, vagy zárj ki kategóriákat.")
-    cols_to_show = [c for c in ["filename", "topics", "ai_suggestions", "ai_reason", "ai_analyzed", "category"] if c in fdf.columns]
+    cols_to_show = [c for c in ["filename", "topics", "ai_caption", "ai_suggestions", "ai_reason", "ai_analyzed", "category"] if c in fdf.columns]
     if cols_to_show:
         st.dataframe(fdf[cols_to_show].head(500), use_container_width=True)
         st.download_button(
