@@ -25,8 +25,16 @@ try:
 except Exception:
     nx = None
 
+try:
+    import torch
+    from transformers import CLIPModel, CLIPProcessor
+except Exception:
+    torch = None
+    CLIPModel = None
+    CLIPProcessor = None
 
-APP_TITLE = "LifeLens V8.2 – Family Analytics"
+
+APP_TITLE = "LifeLens V8.4 – Family Analytics + AI Vision"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -60,6 +68,115 @@ TOPIC_TO_CATEGORY = {
 }
 
 
+
+def infer_topics_from_path(path: Path):
+    """Saját képeknél csak fájlnév + mappanév alapján címkézünk.
+    Fontos: dátum alapján már nem teszünk rá automatikusan nyaralás/karácsony taget,
+    mert az túl sok téves találatot adott.
+    """
+    text = str(path).lower()
+    replacements = {
+        "á": "a", "é": "e", "í": "i", "ó": "o", "ö": "o", "ő": "o",
+        "ú": "u", "ü": "u", "ű": "u"
+    }
+    norm = text
+    for a, b in replacements.items():
+        norm = norm.replace(a, b)
+
+    keyword_map = {
+        "vonat": ["vonat", "train", "railway"],
+        "traktor": ["traktor", "tractor"],
+        "autó": ["auto", "autó", "car", "kocsi"],
+        "bicikli": ["bicikli", "bike", "bicycle", "bringa"],
+        "foci": ["foci", "football", "soccer", "meccs"],
+        "túrázás": ["tura", "túra", "turazas", "kirandulas", "kirándulás", "hiking"],
+        "hegy": ["hegy", "mountain"],
+        "nyaralás": ["nyaralas", "nyaralás", "balaton", "holiday", "vacation", "strand", "tenger"],
+        "strand": ["strand", "beach"],
+        "állatkert": ["allatkert", "állatkert", "zoo"],
+        "kutya": ["kutya", "dog"],
+        "rajz": ["rajz", "drawing", "festes", "festés"],
+        "gitár": ["gitar", "gitár", "guitar", "zene", "music"],
+        "sakk": ["sakk", "chess"],
+        "karácsony": ["karacsony", "karácsony", "christmas", "xmas"],
+        "születésnap": ["szulinap", "szülinap", "birthday", "torta", "cake"],
+        "játszótér": ["jatszoter", "játszótér", "playground"],
+        "plüss": ["pluss", "plüss", "plush"],
+        "fagyi": ["fagyi", "icecream", "ice_cream", "ice cream"],
+    }
+
+    topics = []
+    for topic, words in keyword_map.items():
+        if any(w.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ö","o").replace("ő","o").replace("ú","u").replace("ü","u").replace("ű","u") in norm for w in words):
+            topics.append(topic)
+
+    return sorted(set(topics))
+
+
+
+AI_TOPIC_PROMPTS = {
+    "vonat": ["toy train", "child playing with train", "railway train"],
+    "traktor": ["tractor", "toy tractor", "child with tractor"],
+    "autó": ["car", "toy car", "child with car"],
+    "bicikli": ["child riding bicycle", "bicycle", "balance bike"],
+    "foci": ["soccer ball", "child playing football", "football match"],
+    "túrázás": ["family hiking", "mountain hiking", "forest trail"],
+    "hegy": ["mountain landscape", "family in mountains"],
+    "nyaralás": ["family vacation", "holiday travel", "family trip"],
+    "strand": ["beach", "family at beach", "child at beach"],
+    "állatkert": ["zoo animals", "family at zoo", "child watching animals"],
+    "kutya": ["dog", "child with dog"],
+    "rajz": ["child drawing", "drawing with pencils", "painting activity"],
+    "gitár": ["child playing guitar", "guitar lesson", "family music"],
+    "sakk": ["chess board", "child playing chess", "people playing chess"],
+    "karácsony": ["christmas tree", "christmas gifts", "family christmas"],
+    "születésnap": ["birthday cake", "birthday party", "child birthday"],
+    "játszótér": ["playground", "child on playground", "swing and slide"],
+    "plüss": ["stuffed animal", "plush toy", "child with stuffed toy"],
+    "fagyi": ["ice cream", "child eating ice cream"],
+}
+
+
+@st.cache_resource(show_spinner=False)
+def load_clip_model():
+    if CLIPModel is None or CLIPProcessor is None or torch is None:
+        return None, None, None
+    model_name = "openai/clip-vit-base-patch32"
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    model.eval()
+    return model, processor, device
+
+
+def ai_detect_topics(img: Image.Image, threshold: float = 0.18):
+    model, processor, device = load_clip_model()
+    if model is None:
+        return [], ""
+
+    labels = []
+    prompts = []
+    for topic, topic_prompts in AI_TOPIC_PROMPTS.items():
+        for prompt in topic_prompts:
+            labels.append(topic)
+            prompts.append(prompt)
+
+    inputs = processor(text=prompts, images=img, return_tensors="pt", padding=True).to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = outputs.logits_per_image.softmax(dim=1)[0].detach().cpu().numpy()
+
+    best = {}
+    for label, prob in zip(labels, probs):
+        best[label] = max(best.get(label, 0), float(prob))
+
+    selected = [k for k, v in best.items() if v >= threshold]
+    selected = sorted(selected, key=lambda k: best[k], reverse=True)
+    reason = ", ".join([f"{k}:{best[k]:.2f}" for k in selected[:6]])
+    return selected[:8], reason
+
+
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
 
 st.markdown("""
@@ -84,11 +201,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V8.2 – Family Analytics")
+st.title("📊 LifeLens V8.4 – Family Analytics")
 st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V8.2 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A V8.4 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
     "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
@@ -283,10 +400,64 @@ def load_demo_zip(uploaded_zip) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("date")
 
 
-def scan_zip(uploaded_file, limit: int) -> pd.DataFrame:
+def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: float = 0.18) -> pd.DataFrame:
+    """Saját ZIP indexelése.
+    Ha a ZIP tartalmaz demo_family_metadata.csv vagy lifelens_metadata.csv fájlt, akkor metadata alapján töltünk.
+    Egyébként csak fájlnév/mappanév alapján címkézünk, hogy ne hozzon mindent minden szűrésnél.
+    """
     temp_root = Path(tempfile.mkdtemp(prefix="lifelens_zip_"))
     with zipfile.ZipFile(uploaded_file) as z:
         z.extractall(temp_root)
+
+    # Metadata támogatás saját csomaghoz is
+    meta_candidates = list(temp_root.rglob("lifelens_metadata.csv")) + list(temp_root.rglob("demo_family_metadata.csv"))
+    if meta_candidates:
+        meta_path = meta_candidates[0]
+        base = meta_path.parent
+        meta = pd.read_csv(meta_path)
+        rows = []
+        for i, r in meta.iterrows():
+            rel = str(r.get("filename", ""))
+            p = base / rel
+            if not p.exists():
+                # fallback: filename basename keresése
+                matches = list(temp_root.rglob(Path(rel).name))
+                p = matches[0] if matches else p
+            if not p.exists():
+                continue
+            dt = pd.to_datetime(r.get("date", None), errors="coerce")
+            if pd.isna(dt):
+                try:
+                    dt = pd.to_datetime(datetime.fromtimestamp(p.stat().st_mtime))
+                except Exception:
+                    dt = pd.NaT
+            topics = str(r.get("topics", ""))
+            main_topic = str(r.get("main_topic", "") or (topics.split(",")[0].strip() if topics else ""))
+            category = str(r.get("category", TOPIC_TO_CATEGORY.get(main_topic, "Egyéb")))
+            rows.append({
+                "media_id": f"user_meta_{i}",
+                "media_type": "image",
+                "path": str(p),
+                "filename": p.name,
+                "folder": str(p.parent),
+                "preview_path": str(p),
+                "size_mb": round(p.stat().st_size / (1024 * 1024), 3),
+                "md5": hashlib.md5(str(p).encode()).hexdigest(),
+                "date": dt,
+                "year": int(r.get("year", dt.year if not pd.isna(dt) else 0)),
+                "month": int(r.get("month", dt.month if not pd.isna(dt) else 0)),
+                "year_month": f"{int(r.get('year', dt.year if not pd.isna(dt) else 0))}-{int(r.get('month', dt.month if not pd.isna(dt) else 0)):02d}",
+                "quality_score": 75 + (i % 20),
+                "persons": str(r.get("persons", "")),
+                "topics": topics,
+                "main_topic": main_topic,
+                "category": category,
+                "events": "",
+                "ai_reason": ai_reason if "ai_reason" in locals() else "",
+                "ai_analyzed": bool(use_ai),
+                "demo": False,
+            })
+        return pd.DataFrame(rows).sort_values("date") if rows else pd.DataFrame()
 
     files = []
     for p in temp_root.rglob("*"):
@@ -307,11 +478,21 @@ def scan_zip(uploaded_file, limit: int) -> pd.DataFrame:
                     dt = exif_dt
                 width, height = img.size
                 q = quality_score(img)
-            topics = []
-            if dt.month == 12:
-                topics.append("karácsony")
-            if dt.month in [6, 7, 8]:
-                topics.append("nyaralás")
+
+            topics = infer_topics_from_path(p)
+            ai_reason = ""
+            if use_ai:
+                if CLIPModel is None or torch is None:
+                    pass
+                else:
+                    try:
+                        with Image.open(p) as ai_img:
+                            ai_img = ImageOps.exif_transpose(ai_img).convert("RGB")
+                            ai_topics, ai_reason = ai_detect_topics(ai_img, threshold=ai_threshold)
+                            topics = sorted(set(topics) | set(ai_topics))
+                    except Exception as _exc:
+                        ai_reason = f"AI hiba: {_exc}"
+            main_topic = topics[0] if topics else ""
             rows.append({
                 "media_id": f"user_{i}",
                 "media_type": "image",
@@ -328,8 +509,8 @@ def scan_zip(uploaded_file, limit: int) -> pd.DataFrame:
                 "quality_score": q,
                 "persons": "",
                 "topics": ", ".join(topics),
-                "main_topic": topics[0] if topics else "",
-                "category": TOPIC_TO_CATEGORY.get(topics[0], "Egyéb") if topics else "Egyéb",
+                "main_topic": main_topic,
+                "category": TOPIC_TO_CATEGORY.get(main_topic, "Egyéb") if main_topic else "Nincs címke",
                 "events": "",
                 "demo": False,
             })
@@ -573,10 +754,15 @@ with st.sidebar:
             st.success("Demo Family Alpha betöltve.")
 
     st.caption("Saját adatokkal csak teszt jelleggel:")
+    st.caption("V8.4: saját ZIP-nél bekapcsolható az AI képfelismerés is. Ez lassabb, de sokkal jobb címkéket ad.")
+    use_ai_for_zip = st.checkbox("AI képfelismerés saját ZIP-re", value=False)
+    ai_threshold = st.slider("AI küszöb", 0.05, 0.40, 0.18, 0.01)
+    if use_ai_for_zip and (CLIPModel is None or torch is None):
+        st.warning("AI-hoz kell a requirements_ai.txt vagy: torch + transformers.")
     user_zip = st.file_uploader("Saját képek ZIP-ben", type=["zip"], key="user_zip")
     if user_zip is not None and st.button("Saját ZIP indexelése", use_container_width=True):
         limit = FREE_IMAGE_LIMIT if not is_premium() else 5000
-        st.session_state["df"] = scan_zip(user_zip, limit)
+        st.session_state["df"] = scan_zip(user_zip, limit, use_ai=use_ai_for_zip, ai_threshold=ai_threshold)
         st.success("Saját ZIP index kész.")
 
 df = st.session_state.get("df", pd.DataFrame())
@@ -614,6 +800,14 @@ if sel_people:
     fdf = fdf[fdf["persons"].fillna("").apply(lambda x: all(p in [v.strip() for v in str(x).split(",")] for p in sel_people))]
 if sel_categories:
     fdf = fdf[fdf["category"].isin(sel_categories)]
+
+if "demo" in fdf.columns and not bool(fdf["demo"].fillna(False).any()):
+    unlabeled = int((fdf["topics"].fillna("").str.strip() == "").sum())
+    if unlabeled:
+        st.warning(
+            f"Saját képek: {unlabeled} képhez nincs címke. "
+            "Kapcsold be az AI képfelismerést, vagy adj metadata CSV-t a pontosabb szűréshez."
+        )
 
 tabs = st.tabs([
     "📊 V8.1 Dashboard",
@@ -859,8 +1053,24 @@ with tabs[5]:
 
 with tabs[6]:
     st.subheader("Export")
-    st.download_button("⬇ Index CSV", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_1_index.csv", mime="text/csv")
+
+    st.markdown("### Szűrt képek / album ZIP")
+    st.write(f"A jelenlegi slicerek alapján exportálandó képek száma: **{len(fdf)}**")
+    if is_premium():
+        st.download_button(
+            "📦 Szűrt képek ZIP export",
+            create_album_zip(fdf, "filtered_album"),
+            file_name="lifelens_filtered_album.zip",
+            mime="application/zip",
+            key="export_filtered_zip",
+            use_container_width=True,
+        )
+    else:
+        locked_feature_box("Szűrt képek ZIP export")
+
+    st.markdown("### Adat export")
+    st.download_button("⬇ Index CSV", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_4_index.csv", mime="text/csv")
     if not period_cards.empty:
-        st.download_button("⬇ Korszak score CSV", period_cards.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_1_period_scores.csv", mime="text/csv")
+        st.download_button("⬇ Korszak score CSV", period_cards.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_4_period_scores.csv", mime="text/csv")
     if not family_dna.empty:
-        st.download_button("⬇ Family DNA CSV", family_dna.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_1_family_dna.csv", mime="text/csv")
+        st.download_button("⬇ Family DNA CSV", family_dna.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v8_4_family_dna.csv", mime="text/csv")
