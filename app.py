@@ -25,18 +25,15 @@ try:
 except Exception:
     nx = None
 
-try:
-    import torch
-    from transformers import CLIPModel, CLIPProcessor, BlipProcessor, BlipForConditionalGeneration
-except Exception:
-    torch = None
-    CLIPModel = None
-    CLIPProcessor = None
-    BlipProcessor = None
-    BlipForConditionalGeneration = None
+# V9.1: heavy AI libraries are imported lazily only when AI is used.
+torch = None
+CLIPModel = None
+CLIPProcessor = None
+BlipProcessor = None
+BlipForConditionalGeneration = None
 
 
-APP_TITLE = "LifeLens V9 – Family Analytics + Caption Vision"
+APP_TITLE = "LifeLens V9.1 – Cloud Safe Caption Vision"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -141,15 +138,24 @@ AI_TOPIC_PROMPTS = {
 
 @st.cache_resource(show_spinner=False)
 def load_clip_model():
-    if CLIPModel is None or CLIPProcessor is None or torch is None:
+    try:
+        import torch as _torch
+        from transformers import CLIPModel as _CLIPModel
+        from transformers import CLIPProcessor as _CLIPProcessor
+    except Exception as exc:
+        st.error(f"CLIP AI nem elérhető ebben a környezetben: {exc}")
         return None, None, None
     model_name = "openai/clip-vit-base-patch32"
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    model.eval()
-    return model, processor, device
+    try:
+        processor = _CLIPProcessor.from_pretrained(model_name)
+        model = _CLIPModel.from_pretrained(model_name)
+        device = "cuda" if _torch.cuda.is_available() else "cpu"
+        model.to(device)
+        model.eval()
+        return model, processor, device
+    except Exception as exc:
+        st.error(f"CLIP modell betöltési hiba: {exc}")
+        return None, None, None
 
 
 def ai_detect_topics(img: Image.Image, threshold: float = 0.18):
@@ -165,7 +171,8 @@ def ai_detect_topics(img: Image.Image, threshold: float = 0.18):
             prompts.append(prompt)
 
     inputs = processor(text=prompts, images=img, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
+    import torch as _torch
+    with _torch.no_grad():
         outputs = model(**inputs)
         probs = outputs.logits_per_image.softmax(dim=1)[0].detach().cpu().numpy()
 
@@ -205,23 +212,35 @@ CAPTION_TOPIC_KEYWORDS = {
 
 @st.cache_resource(show_spinner=False)
 def load_caption_model():
-    if BlipProcessor is None or BlipForConditionalGeneration is None or torch is None:
+    """Lazy BLIP loader. Prevents Streamlit Cloud from crashing at startup."""
+    try:
+        import torch as _torch
+        from transformers import BlipProcessor as _BlipProcessor
+        from transformers import BlipForConditionalGeneration as _BlipForConditionalGeneration
+    except Exception as exc:
+        st.error(f"Caption AI nem elérhető ebben a környezetben: {exc}")
         return None, None, None
+
     model_name = "Salesforce/blip-image-captioning-base"
-    processor = BlipProcessor.from_pretrained(model_name)
-    model = BlipForConditionalGeneration.from_pretrained(model_name)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    model.eval()
-    return model, processor, device
+    try:
+        processor = _BlipProcessor.from_pretrained(model_name)
+        model = _BlipForConditionalGeneration.from_pretrained(model_name)
+        device = "cuda" if _torch.cuda.is_available() else "cpu"
+        model.to(device)
+        model.eval()
+        return model, processor, device
+    except Exception as exc:
+        st.error(f"Caption modell betöltési hiba: {exc}")
+        return None, None, None
 
 
 def caption_image(img: Image.Image) -> str:
     model, processor, device = load_caption_model()
     if model is None:
         return ""
+    import torch as _torch
     inputs = processor(img, return_tensors="pt").to(device)
-    with torch.no_grad():
+    with _torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=35)
     caption = processor.decode(out[0], skip_special_tokens=True)
     return str(caption or "").strip()
@@ -260,11 +279,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V9 – Family Analytics")
+st.title("📊 LifeLens V9.1 – Family Analytics")
 st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V9 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A V9.1 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
     "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
@@ -846,8 +865,8 @@ with st.sidebar:
         value=True,
         help="Caption módban ezt érdemes bekapcsolni, mert csak konkrét szavak alapján címkéz."
     )
-    if use_ai_for_zip and vision_mode == "caption" and (BlipProcessor is None or torch is None):
-        st.warning("Caption AI-hoz kell: torch + transformers.")
+    if use_ai_for_zip and vision_mode == "caption":
+        st.caption("Caption AI használatához a requirements.txt-ben szerepelnie kell: torch, transformers.")
     user_zip = st.file_uploader("Saját képek ZIP-ben", type=["zip"], key="user_zip")
     if user_zip is not None and st.button("Saját ZIP indexelése", use_container_width=True):
         limit = FREE_IMAGE_LIMIT if not is_premium() else 5000
