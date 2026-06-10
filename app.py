@@ -39,10 +39,13 @@ except Exception:
     CLIPProcessor = None
 
 
-APP_TITLE = "LifeLens V7.2 – Family Analytics + Folder Picker"
+APP_TITLE = "LifeLens V7.3 – Family Analytics Free/Premium"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
+
+FREE_IMAGE_LIMIT = 500
+PREMIUM_UNLOCK_CODE = "LIFELENS-PREMIUM-DEMO"
 
 PERSON_HINTS = {
     "Lenke": ["lenke", "lencsi"],
@@ -126,13 +129,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V7.2 – Family Analytics")
-st.caption("Helyi családi képelemző dashboard · gyors index + opcionális Deep Analysis + mappatallózás")
+st.title("📊 LifeLens V7.3 – Family Analytics")
+st.caption("Helyi családi képelemző dashboard · Free/Premium mód + 500 képes ingyenes limit + helyi elemzés")
 
 st.markdown("""
 <div class="deep-box">
-<b>V7.2 újdonság:</b> az app először gyors indexet készít. 
-Utána külön elindítható a <b>Deep Analysis</b>, amely helyi CLIP AI-val mélyebben elemzi a képtartalmat.
+<b>V7.3 újdonság:</b> Free/Premium logika. 
+Ingyenes módban maximum 500 médiafájlt elemez az app. Premium módban nincs limit, és elérhető a Deep Analysis + album export.
 </div>
 """, unsafe_allow_html=True)
 
@@ -531,10 +534,43 @@ def render_gallery(rows_df, max_items=24):
                 st.write(row.get("filename", ""))
 
 
+
+def is_premium() -> bool:
+    return bool(st.session_state.get("premium_unlocked", False))
+
+
+def premium_badge():
+    if is_premium():
+        st.success("✅ Premium mód aktív")
+    else:
+        st.warning(f"🔒 Free mód aktív · max {FREE_IMAGE_LIMIT} médiafájl")
+
+
+def locked_feature_box(feature_name: str):
+    st.info(
+        f"🔒 {feature_name} Premium funkció. "
+        f"Free módban a dashboard preview működik, de ez a funkció zárolt."
+    )
+
+
 if "work_dir" not in st.session_state:
     st.session_state.work_dir = tempfile.mkdtemp(prefix="lifelens_v7_1_")
 
 with st.sidebar:
+    st.header("0. Licenc / mód")
+    premium_badge()
+    unlock_code = st.text_input("Premium feloldó kód", type="password", help="Demo kód: LIFELENS-PREMIUM-DEMO")
+    if st.button("Premium feloldása", use_container_width=True):
+        if unlock_code.strip() == PREMIUM_UNLOCK_CODE:
+            st.session_state["premium_unlocked"] = True
+            st.success("Premium mód feloldva.")
+            st.rerun()
+        else:
+            st.error("Hibás feloldó kód.")
+
+    if not is_premium():
+        st.caption("Free módban 500 médiafájl elemezhető. Premium: korlátlan + Deep Analysis + album export.")
+
     st.header("1. Forrás")
 
     if "selected_folder" not in st.session_state:
@@ -568,22 +604,26 @@ with st.sidebar:
 
 
     st.header("2. Gyors index")
-    limit = st.number_input("Max. fájl első teszthez", min_value=100, max_value=200000, value=3000, step=100)
+    limit = st.number_input("Max. fájl indexeléshez", min_value=100, max_value=200000, value=500 if not is_premium() else 3000, step=100)
     if st.button("Gyors index indítása", use_container_width=True):
         p = Path(folder)
         if not p.exists() or not p.is_dir():
             st.error("Nem találom ezt a mappát.")
         else:
-            df = scan_media(p, int(limit))
+            effective_limit = int(limit)
+            if not is_premium():
+                effective_limit = min(effective_limit, FREE_IMAGE_LIMIT)
+                st.info(f"Free mód: az első {effective_limit} médiafájlt indexelem.")
+            df = scan_media(p, effective_limit)
             st.session_state["df"] = df
-            save_path = p / "lifelens_v7_2_index.csv"
+            save_path = p / "lifelens_v7_3_index.csv"
             try:
                 df.to_csv(save_path, index=False, encoding="utf-8-sig")
                 st.success(f"Index mentve: {save_path}")
             except Exception as exc:
                 st.warning(f"Index készült, de nem tudtam menteni: {exc}")
 
-    uploaded_index = st.file_uploader("Korábbi lifelens_v7_2_index.csv betöltése", type=["csv"])
+    uploaded_index = st.file_uploader("Korábbi lifelens_v7_3_index.csv betöltése", type=["csv"])
     if uploaded_index:
         st.session_state["df"] = pd.read_csv(uploaded_index)
         st.success("Index betöltve.")
@@ -624,16 +664,19 @@ sel_topics = st.sidebar.multiselect("Téma / korszak", all_topics)
 media_filter = st.sidebar.multiselect("Média", ["image", "video"], default=["image", "video"])
 
 if st.sidebar.button("🔥 Deep Analysis indítása", use_container_width=True):
-    df2 = run_deep_analysis(df, float(deep_threshold), int(deep_limit))
-    st.session_state["df"] = df2
-    if folder:
-        try:
-            p = Path(folder)
-            if p.exists():
-                df2.to_csv(p / "lifelens_v7_2_index.csv", index=False, encoding="utf-8-sig")
-        except Exception:
-            pass
-    st.rerun()
+    if not is_premium():
+        st.sidebar.error("A Deep Analysis Premium funkció.")
+    else:
+        df2 = run_deep_analysis(df, float(deep_threshold), int(deep_limit))
+        st.session_state["df"] = df2
+        if folder:
+            try:
+                p = Path(folder)
+                if p.exists():
+                    df2.to_csv(p / "lifelens_v7_3_index.csv", index=False, encoding="utf-8-sig")
+            except Exception:
+                pass
+        st.rerun()
 
 fdf = df.copy()
 if sel_years:
@@ -660,6 +703,8 @@ tabs = st.tabs([
 
 with tabs[0]:
     st.subheader("Family Insights Dashboard")
+    if not is_premium():
+        st.caption(f"Free preview: maximum {FREE_IMAGE_LIMIT} média alapján. Premium módban korlátlan archívum + Deep Analysis + album export.")
     topic_scores = compute_topic_year_scores(fdf)
     family_scores = compute_family_scores(fdf)
     rel = compute_relationships(fdf)
@@ -741,7 +786,10 @@ with tabs[2]:
             year = int(year)
             sub = fdf[(fdf["year"] == year) & (fdf["topics"].fillna("").str.contains(re.escape(topic), case=False, regex=True))]
             st.metric("Talált média", len(sub))
-            st.download_button("📦 Album ZIP ebből", create_album_zip(sub, choice), file_name=f"{safe_name(choice)}.zip", mime="application/zip")
+            if is_premium():
+                st.download_button("📦 Album ZIP ebből", create_album_zip(sub, choice), file_name=f"{safe_name(choice)}.zip", mime="application/zip")
+            else:
+                locked_feature_box("Album ZIP export")
             st.caption("Tipp: bal oldalon tegyél rá plusz személy-szűrőt, pl. Zente.")
             render_gallery(sub, 32)
 
@@ -796,7 +844,10 @@ with tabs[5]:
         st.info("Nincs találat.")
     else:
         st.dataframe(hidden[["filename", "date", "topics", "persons", "quality_score", "hidden_score"]], use_container_width=True)
-        st.download_button("📦 Hidden Memories album ZIP", create_album_zip(hidden, "hidden_memories"), file_name="hidden_memories.zip", mime="application/zip")
+        if is_premium():
+            st.download_button("📦 Hidden Memories album ZIP", create_album_zip(hidden, "hidden_memories"), file_name="hidden_memories.zip", mime="application/zip")
+        else:
+            locked_feature_box("Hidden Memories album export")
         render_gallery(hidden, 40)
 
 with tabs[6]:
@@ -805,13 +856,16 @@ with tabs[6]:
     sort_by = st.selectbox("Rendezés", ["date", "quality_score", "filename"], index=0)
     asc = st.checkbox("Növekvő", value=True)
     gallery = fdf.sort_values(sort_by, ascending=asc, na_position="last") if sort_by in fdf.columns else fdf
-    st.download_button("📦 Album ZIP a jelenlegi szűrésből", create_album_zip(gallery, "filtered_album"), file_name="filtered_album.zip", mime="application/zip")
+    if is_premium():
+        st.download_button("📦 Album ZIP a jelenlegi szűrésből", create_album_zip(gallery, "filtered_album"), file_name="filtered_album.zip", mime="application/zip")
+    else:
+        locked_feature_box("Szűrt album ZIP export")
     render_gallery(gallery, 60)
 
 with tabs[7]:
     st.subheader("Export")
-    st.download_button("⬇ Index CSV letöltése", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_2_filtered_index.csv", mime="text/csv")
+    st.download_button("⬇ Index CSV letöltése", fdf.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_3_filtered_index.csv", mime="text/csv")
     full_scores = compute_topic_year_scores(df)
     if not full_scores.empty:
-        st.download_button("⬇ Korszak score CSV", full_scores.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_2_period_scores.csv", mime="text/csv")
+        st.download_button("⬇ Korszak score CSV", full_scores.to_csv(index=False).encode("utf-8-sig"), file_name="lifelens_v7_3_period_scores.csv", mime="text/csv")
     st.caption("Későbbi V7.3: személytanítás / arcfelismerés, PDF dashboard export, HTML Family Wrapped.")
