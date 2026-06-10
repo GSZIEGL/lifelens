@@ -26,7 +26,7 @@ except Exception:
     nx = None
 
 
-APP_TITLE = "LifeLens V8.1 – Family Analytics"
+APP_TITLE = "LifeLens V8.2 – Family Analytics"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -84,12 +84,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V8.1 – Family Analytics")
-st.caption("Demo Family Alpha V2 · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
+st.title("📊 LifeLens V8.2 – Family Analytics")
+st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V8.1 már külső demo csomagot is tud olvasni. "
-    "Töltsd fel a Demo_Family_Alpha_V2.zip fájlt, és az app a metadata alapján stabil dashboardot készít."
+    "A V8.2 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
 
@@ -122,6 +122,67 @@ def locked_feature_box(feature_name: str):
         """,
         unsafe_allow_html=True,
     )
+
+
+def set_drilldown(kind: str, title: str, topic: str = "", year=None, category: str = "", year_month: str = ""):
+    st.session_state["drilldown"] = {
+        "kind": kind,
+        "title": title,
+        "topic": topic,
+        "year": year,
+        "category": category,
+        "year_month": year_month,
+    }
+
+
+def get_drilldown_df(df: pd.DataFrame) -> pd.DataFrame:
+    dd = st.session_state.get("drilldown")
+    if not dd:
+        return pd.DataFrame()
+    out = df.copy()
+    if dd.get("topic"):
+        topic = dd["topic"]
+        out = out[out["topics"].fillna("").apply(lambda x: topic in [v.strip() for v in str(x).split(",")])]
+    if dd.get("year") is not None:
+        out = out[out["year"] == int(dd["year"])]
+    if dd.get("category"):
+        out = out[out["category"] == dd["category"]]
+    if dd.get("year_month"):
+        out = out[out["year_month"] == dd["year_month"]]
+    return out
+
+
+def render_drilldown_panel(df: pd.DataFrame):
+    dd = st.session_state.get("drilldown")
+    if not dd:
+        return
+    sub = get_drilldown_df(df)
+    st.markdown("---")
+    st.subheader("🔎 Kiválasztott insight képei")
+    st.write(f"**{dd.get('title','')}** · találat: **{len(sub)}**")
+    if is_premium() and not sub.empty:
+        st.download_button(
+            "📦 Album ZIP ebből a kiválasztásból",
+            create_album_zip(sub, dd.get("title", "album")),
+            file_name=f"{safe_name(dd.get('title', 'album'))}.zip",
+            mime="application/zip",
+            key="drilldown_zip",
+        )
+    elif not is_premium():
+        locked_feature_box("Kiválasztott insight album export")
+    render_gallery(sub, max_items=48)
+
+
+def get_bundled_demo_zip():
+    candidates = [
+        Path(__file__).resolve().parent / "Demo_Family_Alpha_V2.zip",
+        Path.cwd() / "Demo_Family_Alpha_V2.zip",
+        Path("/mnt/data/Demo_Family_Alpha_V2.zip"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
 
 def split_values(series):
@@ -497,10 +558,19 @@ with st.sidebar:
     st.divider()
     st.header("1. Adatforrás")
 
-    demo_zip = st.file_uploader("Demo Family Alpha V2 ZIP", type=["zip"], key="demo_zip")
-    if demo_zip is not None and st.button("Demo Family betöltése", use_container_width=True):
-        st.session_state["df"] = load_demo_zip(demo_zip)
-        st.success("Demo Family Alpha betöltve.")
+    bundled_demo = get_bundled_demo_zip()
+    if bundled_demo:
+        st.success("✅ Beépített demo csomag megtalálva")
+        if st.button("Demo Family automatikus betöltése", use_container_width=True):
+            st.session_state["df"] = load_demo_zip(bundled_demo)
+            st.success("Demo Family Alpha betöltve.")
+    else:
+        st.warning("Nem találom a Demo_Family_Alpha_V2.zip fájlt az app mellett.")
+        st.caption("GitHub repo-ba tedd fel az app.py mellé Demo_Family_Alpha_V2.zip néven.")
+        demo_zip = st.file_uploader("Demo Family Alpha V2 ZIP kézi feltöltése", type=["zip"], key="demo_zip")
+        if demo_zip is not None and st.button("Demo Family betöltése", use_container_width=True):
+            st.session_state["df"] = load_demo_zip(demo_zip)
+            st.success("Demo Family Alpha betöltve.")
 
     st.caption("Saját adatokkal csak teszt jelleggel:")
     user_zip = st.file_uploader("Saját képek ZIP-ben", type=["zip"], key="user_zip")
@@ -513,7 +583,8 @@ df = st.session_state.get("df", pd.DataFrame())
 
 if df.empty:
     st.markdown("## Kezdés")
-    st.write("Töltsd fel a **Demo_Family_Alpha_V2.zip** fájlt bal oldalon, majd kattints a betöltésre.")
+    st.write("Bal oldalon kattints a **Demo Family automatikus betöltése** gombra.")
+    st.write("Ha a gomb nem látszik, tedd fel a `Demo_Family_Alpha_V2.zip` fájlt az app.py mellé a GitHub repo-ba.")
     st.stop()
 
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -577,37 +648,44 @@ with tabs[0]:
     cols = st.columns(3)
 
     with cols[0]:
-        if strongest_era is not None:
-            st.markdown(f"""
-            <div class="insight-card">
-            <div class="small-muted">legerősebb korszak</div>
-            <h3>{strongest_era['title']}</h3>
-            <p class="big-kpi">{strongest_era['era_score']}/100</p>
-            <p>{strongest_era['subtitle']}</p>
-            </div>
-            """, unsafe_allow_html=True)
+        with st.container(border=True):
+            st.caption("legerősebb korszak")
+            if strongest_era is not None:
+                st.markdown(f"### {strongest_era['title']}")
+                st.metric("Era score", f"{strongest_era['era_score']}/100")
+                st.write(strongest_era["subtitle"])
+                if st.button("Képek megnyitása", key="open_top_era", use_container_width=True):
+                    set_drilldown("era", strongest_era["title"], topic=strongest_era["topic"], year=int(strongest_era["year"]))
+                    st.rerun()
+            else:
+                st.write("Nincs elég adat.")
 
     with cols[1]:
-        if top_dna is not None:
-            st.markdown(f"""
-            <div class="insight-card">
-            <div class="small-muted">Family DNA</div>
-            <h3>{top_dna['category']}</h3>
-            <p class="big-kpi">{top_dna['dna_score']}/100</p>
-            <p>{int(top_dna['count'])} találat · {top_dna['share_pct']}% arány</p>
-            </div>
-            """, unsafe_allow_html=True)
+        with st.container(border=True):
+            st.caption("Family DNA")
+            if top_dna is not None:
+                st.markdown(f"### {top_dna['category']}")
+                st.metric("DNA score", f"{top_dna['dna_score']}/100")
+                st.write(f"{int(top_dna['count'])} találat · {top_dna['share_pct']}% arány")
+                if st.button("Kategória képei", key="open_top_dna", use_container_width=True):
+                    set_drilldown("dna", f"Family DNA · {top_dna['category']}", category=top_dna["category"])
+                    st.rerun()
+            else:
+                st.write("Nincs elég adat.")
 
     with cols[2]:
-        if top_nostalgia is not None:
-            st.markdown(f"""
-            <div class="insight-card">
-            <div class="small-muted">Nostalgia Score</div>
-            <h3>{top_nostalgia['year_month']} · {top_nostalgia['topic']}</h3>
-            <p class="big-kpi">{top_nostalgia['nostalgia_score']}/100</p>
-            <p>{int(top_nostalgia['count'])} kép</p>
-            </div>
-            """, unsafe_allow_html=True)
+        with st.container(border=True):
+            st.caption("Nostalgia Score")
+            if top_nostalgia is not None:
+                title = f"{top_nostalgia['year_month']} · {top_nostalgia['topic']}"
+                st.markdown(f"### {title}")
+                st.metric("Nostalgia", f"{top_nostalgia['nostalgia_score']}/100")
+                st.write(f"{int(top_nostalgia['count'])} kép")
+                if st.button("Hidden képek", key="open_top_nostalgia", use_container_width=True):
+                    set_drilldown("nostalgia", title, topic=top_nostalgia["topic"], year_month=top_nostalgia["year_month"])
+                    st.rerun()
+            else:
+                st.write("Nincs elég adat.")
 
     left, right = st.columns(2)
 
@@ -624,6 +702,15 @@ with tabs[0]:
                 labels={"era_score": "Era score", "label": ""},
             )
             st.plotly_chart(fig, use_container_width=True)
+            st.caption("Kattintás helyett stabil drill-down: válassz az alábbi gyorsgombok közül.")
+
+        if not period_cards.empty:
+            quick_cols = st.columns(min(3, len(period_cards)))
+            for i, (_, r) in enumerate(period_cards.head(3).iterrows()):
+                with quick_cols[i % len(quick_cols)]:
+                    if st.button(f"{r['topic']} {int(r['year'])}", key=f"quick_era_{i}", use_container_width=True):
+                        set_drilldown("era", f"{r['topic']} {int(r['year'])}", topic=r["topic"], year=int(r["year"]))
+                        st.rerun()
 
     with right:
         st.markdown("### Family DNA")
@@ -635,6 +722,15 @@ with tabs[0]:
                 hole=0.45,
             )
             st.plotly_chart(fig, use_container_width=True)
+            if not family_dna.empty:
+                dna_cols = st.columns(min(3, len(family_dna)))
+                for i, (_, r) in enumerate(family_dna.head(3).iterrows()):
+                    with dna_cols[i % len(dna_cols)]:
+                        if st.button(str(r["category"]), key=f"quick_dna_{i}", use_container_width=True):
+                            set_drilldown("dna", f"Family DNA · {r['category']}", category=r["category"])
+                            st.rerun()
+
+    render_drilldown_panel(fdf)
 
 with tabs[1]:
     st.subheader("Korszakmotor V1")
@@ -675,6 +771,16 @@ with tabs[2]:
             fig = px.bar(family_dna.sort_values("dna_score"), x="dna_score", y="category", orientation="h")
             st.plotly_chart(fig, use_container_width=True)
 
+        st.markdown("### Kategória drill-down")
+        cat_choice = st.selectbox("Válassz Family DNA kategóriát", family_dna["category"].tolist(), key="dna_category_select")
+        if cat_choice:
+            sub = fdf[fdf["category"].eq(cat_choice)]
+            st.metric("Talált kép", len(sub))
+            if st.button("Kiválasztott kategória rögzítése", key="set_dna_drill", use_container_width=True):
+                set_drilldown("dna", f"Family DNA · {cat_choice}", category=cat_choice)
+                st.rerun()
+            render_gallery(sub, max_items=32)
+
 with tabs[3]:
     st.subheader("Nostalgia / Hidden Memories")
     if nostalgia.empty:
@@ -705,23 +811,42 @@ with tabs[4]:
             for _, r in relationships.iterrows():
                 G.add_edge(r["person_a"], r["person_b"], weight=int(r["count"]))
             pos = nx.spring_layout(G, seed=7)
-            edge_x, edge_y = [], []
-            for edge in G.edges():
-                x0, y0 = pos[edge[0]]
-                x1, y1 = pos[edge[1]]
-                edge_x += [x0, x1, None]
-                edge_y += [y0, y1, None]
+            fig = go.Figure()
+            max_w = max([G[u][v].get("weight", 1) for u, v in G.edges()] or [1])
+            for u, v in G.edges():
+                x0, y0 = pos[u]
+                x1, y1 = pos[v]
+                weight = G[u][v].get("weight", 1)
+                width = 1.5 + 8 * weight / max_w
+                fig.add_trace(go.Scatter(
+                    x=[x0, x1],
+                    y=[y0, y1],
+                    mode="lines",
+                    line=dict(width=width),
+                    hoverinfo="text",
+                    text=[f"{u} – {v}: {weight} közös kép"],
+                    showlegend=False,
+                ))
+
             node_x, node_y, text = [], [], []
             for node in G.nodes():
                 x, y = pos[node]
                 node_x.append(x)
                 node_y.append(y)
                 text.append(node)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=3), hoverinfo="none"))
-            fig.add_trace(go.Scatter(x=node_x, y=node_y, mode="markers+text", text=text, textposition="top center", marker=dict(size=32), hoverinfo="text"))
+            fig.add_trace(go.Scatter(x=node_x, y=node_y, mode="markers+text", text=text, textposition="top center", marker=dict(size=32), hoverinfo="text", showlegend=False))
             fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=10, b=10), height=520)
             st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Kapcsolat drill-down")
+        rel_labels = [f"{r.person_a} + {r.person_b} · {int(r.count)} kép" for r in relationships.itertuples()]
+        rel_choice = st.selectbox("Válassz kapcsolatot", rel_labels, key="rel_select")
+        if rel_choice:
+            pair = rel_choice.split(" · ")[0]
+            a, b = [x.strip() for x in pair.split("+")]
+            sub = fdf[fdf["persons"].fillna("").apply(lambda x: a in [v.strip() for v in str(x).split(",")] and b in [v.strip() for v in str(x).split(",")])]
+            st.metric("Közös képek", len(sub))
+            render_gallery(sub, max_items=32)
 
 with tabs[5]:
     st.subheader("Képek + album")
