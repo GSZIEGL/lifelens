@@ -34,7 +34,7 @@ except Exception:
     CLIPProcessor = None
 
 
-APP_TITLE = "LifeLens V8.5 – Family Analytics + AI Tuning"
+APP_TITLE = "LifeLens V8.6 – Family Analytics + Safe AI Review"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"}
 SUPPORTED_EXT = IMAGE_EXT | VIDEO_EXT
@@ -201,11 +201,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 LifeLens V8.5 – Family Analytics")
+st.title("📊 LifeLens V8.6 – Family Analytics")
 st.caption("Beépített demo · kattintható insightok · Korszakmotor · Family DNA · Nostalgia Score · Dashboardból album")
 
 st.info(
-    "A V8.5 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
+    "A V8.6 már automatikusan betölti a Demo_Family_Alpha_V2.zip fájlt, ha az app.py mellett van a GitHub repo-ban. "
     "A dashboard insightjai kattintható gombokkal képgalériára/drill-down nézetre visznek."
 )
 
@@ -400,7 +400,7 @@ def load_demo_zip(uploaded_zip) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("date")
 
 
-def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: float = 0.30, max_ai_topics: int = 3, excluded_ai_topics=None) -> pd.DataFrame:
+def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: float = 0.35, max_ai_topics: int = 2, excluded_ai_topics=None, auto_apply_ai: bool = False) -> pd.DataFrame:
     """Saját ZIP indexelése.
     Ha a ZIP tartalmaz demo_family_metadata.csv vagy lifelens_metadata.csv fájlt, akkor metadata alapján töltünk.
     Egyébként csak fájlnév/mappanév alapján címkézünk, hogy ne hozzon mindent minden szűrésnél.
@@ -492,7 +492,10 @@ def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: floa
                             ai_img = ImageOps.exif_transpose(ai_img).convert("RGB")
                             ai_topics, ai_reason = ai_detect_topics(ai_img, threshold=ai_threshold)
                             ai_topics = [t for t in ai_topics if t not in excluded_ai_topics][:max_ai_topics]
-                            topics = sorted(set(topics) | set(ai_topics))
+                            # V8.6: az AI alapból csak javaslat, nem automatikus címke.
+                            # Automatikusan csak akkor kerül a topics mezőbe, ha a felhasználó külön bekapcsolja.
+                            if auto_apply_ai:
+                                topics = sorted(set(topics) | set(ai_topics))
                     except Exception as _exc:
                         ai_reason = f"AI hiba: {_exc}"
             main_topic = topics[0] if topics else ""
@@ -512,6 +515,9 @@ def scan_zip(uploaded_file, limit: int, use_ai: bool = False, ai_threshold: floa
                 "quality_score": q,
                 "persons": "",
                 "topics": ", ".join(topics),
+                "ai_suggestions": ", ".join(ai_topics) if "ai_topics" in locals() else "",
+                "ai_reason": ai_reason if "ai_reason" in locals() else "",
+                "ai_analyzed": bool(use_ai),
                 "main_topic": main_topic,
                 "category": TOPIC_TO_CATEGORY.get(main_topic, "Egyéb") if main_topic else "Nincs címke",
                 "events": "",
@@ -757,15 +763,39 @@ with st.sidebar:
             st.success("Demo Family Alpha betöltve.")
 
     st.caption("Saját adatokkal csak teszt jelleggel:")
-    st.caption("V8.4: saját ZIP-nél bekapcsolható az AI képfelismerés is. Ez lassabb, de sokkal jobb címkéket ad.")
-    use_ai_for_zip = st.checkbox("AI képfelismerés saját ZIP-re, szigorított találatokkal", value=False)
-    ai_threshold = st.slider("AI küszöb", 0.05, 0.40, 0.18, 0.01)
+    st.caption("V8.6: az AI alapból csak javaslatot ad. Így a téves AI címkék nem rontják el a szűrést.")
+    use_ai_for_zip = st.checkbox("AI képfelismerés futtatása saját ZIP-re", value=False)
+    ai_threshold = st.slider(
+        "AI szigorúság / küszöb",
+        0.10, 0.70, 0.35, 0.01,
+        help="Magasabb érték = kevesebb, de biztosabb javaslat. Javaslat: 0.35–0.50."
+    )
+    max_ai_topics = st.slider("Max. AI javaslat képenként", 1, 5, 2)
+    excluded_ai_topics = st.multiselect(
+        "Kizárt AI kategóriák",
+        sorted(AI_TOPIC_PROMPTS.keys()) if "AI_TOPIC_PROMPTS" in globals() else [],
+        default=[],
+        help="Ha például nincs gitár/fagyi a csomagban, zárd ki ezeket."
+    )
+    auto_apply_ai = st.checkbox(
+        "Kísérleti: AI javaslatok automatikus címkévé alakítása",
+        value=False,
+        help="Ha kikapcsolva marad, az AI csak javaslatot ad az AI ellenőrzés fülön, és nem befolyásolja a szűrőket."
+    )
     if use_ai_for_zip and (CLIPModel is None or torch is None):
         st.warning("AI-hoz kell a requirements_ai.txt vagy: torch + transformers.")
     user_zip = st.file_uploader("Saját képek ZIP-ben", type=["zip"], key="user_zip")
     if user_zip is not None and st.button("Saját ZIP indexelése", use_container_width=True):
         limit = FREE_IMAGE_LIMIT if not is_premium() else 5000
-        st.session_state["df"] = scan_zip(user_zip, limit, use_ai=use_ai_for_zip, ai_threshold=ai_threshold)
+        st.session_state["df"] = scan_zip(
+            user_zip,
+            limit,
+            use_ai=use_ai_for_zip,
+            ai_threshold=ai_threshold,
+            max_ai_topics=max_ai_topics,
+            excluded_ai_topics=excluded_ai_topics,
+            auto_apply_ai=auto_apply_ai,
+        )
         st.success("Saját ZIP index kész.")
 
 df = st.session_state.get("df", pd.DataFrame())
@@ -811,6 +841,9 @@ if "demo" in fdf.columns and not bool(fdf["demo"].fillna(False).any()):
             f"Saját képek: {unlabeled} képhez nincs címke. "
             "Kapcsold be az AI képfelismerést, vagy adj metadata CSV-t a pontosabb szűréshez."
         )
+
+if "ai_suggestions" in fdf.columns and fdf["ai_suggestions"].fillna("").str.strip().ne("").any() and not fdf["topics"].fillna("").str.contains(",").any():
+    st.info("AI javaslatok készültek, de nem lettek automatikusan címkévé alakítva. Nézd meg az 🤖 AI ellenőrzés fület.")
 
 tabs = st.tabs([
     "📊 V8.1 Dashboard",
@@ -1081,7 +1114,7 @@ with tabs[6]:
     st.download_button(
         "⬇ Index CSV",
         fdf.to_csv(index=False).encode("utf-8-sig"),
-        file_name="lifelens_v8_5_index.csv",
+        file_name="lifelens_v8_6_index.csv",
         mime="text/csv",
         use_container_width=True,
     )
@@ -1089,7 +1122,7 @@ with tabs[6]:
         st.download_button(
             "⬇ Korszak score CSV",
             period_cards.to_csv(index=False).encode("utf-8-sig"),
-            file_name="lifelens_v8_5_period_scores.csv",
+            file_name="lifelens_v8_6_period_scores.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -1097,7 +1130,7 @@ with tabs[6]:
         st.download_button(
             "⬇ Family DNA CSV",
             family_dna.to_csv(index=False).encode("utf-8-sig"),
-            file_name="lifelens_v8_5_family_dna.csv",
+            file_name="lifelens_v8_6_family_dna.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -1105,8 +1138,15 @@ with tabs[6]:
 with tabs[7]:
     st.subheader("AI ellenőrzés / címkék finomhangolása")
     st.write("Itt látszik, melyik kép milyen AI címkét kapott. Ha sok a téves címke, emeld az AI küszöböt, vagy zárj ki kategóriákat.")
-    cols_to_show = [c for c in ["filename", "topics", "ai_reason", "ai_analyzed", "category"] if c in fdf.columns]
+    cols_to_show = [c for c in ["filename", "topics", "ai_suggestions", "ai_reason", "ai_analyzed", "category"] if c in fdf.columns]
     if cols_to_show:
         st.dataframe(fdf[cols_to_show].head(500), use_container_width=True)
+        st.download_button(
+            "⬇ AI javaslatok CSV",
+            fdf[cols_to_show].to_csv(index=False).encode("utf-8-sig"),
+            file_name="lifelens_ai_suggestions.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
     else:
         st.info("Nincs AI címkeinformáció.")
